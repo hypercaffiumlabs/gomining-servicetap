@@ -14,7 +14,7 @@
 // beyond relaying the one response that contains it back to the browser that asked.
 
 // Only the wizard page may call this. Update if the page ever moves.
-const ALLOWED_ORIGIN = "https://jdobbsclt.github.io";
+const ALLOWED_ORIGIN = "https://hypercaffiumlabs.github.io";
 
 // Set once via `wrangler secret put GITHUB_OAUTH_CLIENT_ID` -- this is the OAuth App's
 // Client ID, which is public information anyway (it's visible in every device-flow

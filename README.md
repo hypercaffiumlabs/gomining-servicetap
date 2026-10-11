@@ -40,7 +40,7 @@ You need three things, and about 10 minutes:
 
 ### The wizard (recommended)
 
-[Open the setup wizard](https://jdobbsclt.github.io/gomining-servicetap/setup.html)
+[Open the setup wizard](https://hypercaffiumlabs.github.io/gomining-servicetap/setup.html)
 and follow it. It signs you into GitHub (the same device-flow sign-in the
 `gh` CLI uses — you approve on GitHub's own site), forks this repo, walks
 you through a one-click bookmark that grabs your GoMining login, writes your
@@ -90,7 +90,7 @@ Never your password — just the two session cookies (`access_token`,
 `refresh_token`) that keep you logged in.
 
 **Easiest: the cookie tool.**
-[Open it](https://jdobbsclt.github.io/gomining-servicetap/cookie-tool.html)
+[Open it](https://hypercaffiumlabs.github.io/gomining-servicetap/cookie-tool.html)
 (also built into the wizard) and drag the bookmark to your bar, once. Log
 into GoMining in a private window, click the bookmark, and the login is on
 your clipboard — paste it into step 4. No DevTools.
@@ -224,7 +224,7 @@ Your fork doesn't update itself.
   `maintenance.yml`'s `env:` block, in which case GitHub asks you to
   resolve it by hand (usually trivial).
 - **Get notified:** on
-  [the upstream repo](https://github.com/jdobbsclt/gomining-servicetap),
+  [the upstream repo](https://github.com/hypercaffiumlabs/gomining-servicetap),
   **Watch → Custom → Releases**.
 
 Updates only ever touch the script, docs, and occasionally the schedule —
