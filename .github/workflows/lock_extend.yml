@@ -63,7 +63,7 @@ jobs:
           # key, instead of a personal access token. Switched over 2026-09-29.
           COOKIE_STORE: cache
           COOKIE_CACHE_KEY: ${{ secrets.COOKIE_CACHE_KEY }}
-          CALC_REPO: jdobbsclt/gomining-flywheel-calculator
+          CALC_REPO: hypercaffiumlabs/gomining-flywheel-calculator
           CALC_REPO_TOKEN: ${{ secrets.CALC_REPO_TOKEN }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
           # Turns on the lock re-extend step in gomining_maintenance.py -- unset in

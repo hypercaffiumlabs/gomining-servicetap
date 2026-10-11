@@ -83,7 +83,7 @@ jobs:
           # mining-mode.json. CALC_REPO_TOKEN is a separate fine-grained PAT:
           # Contents read/write on that one repo, nothing else. Leave both
           # unset (as in a fork) and the whole feature is skipped.
-          CALC_REPO: jdobbsclt/gomining-flywheel-calculator
+          CALC_REPO: hypercaffiumlabs/gomining-flywheel-calculator
           CALC_REPO_TOKEN: ${{ secrets.CALC_REPO_TOKEN }}
           # Optional -- error monitoring + cron check-ins. Script runs fine
           # without this secret set, just with no Sentry visibility.
