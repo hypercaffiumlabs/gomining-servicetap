@@ -27,11 +27,12 @@ jobs:
     # A normal run completes in under a minute, but the script now retries
     # a struggling account up to 3 times (~30s attempt + 10s wait each)
     # before giving up, and does this per account. Worst case for 2
-    # accounts is a few minutes; 6 is generous headroom over that while
-    # still keeping the worst-case hang short -- without this, a hung step
+    # accounts is a few minutes, plus up to 5 for a slow dependency install
+    # (see below); 10 covers both while still keeping the worst-case hang
+    # short -- without this, a hung step
     # (e.g. a stuck dependency install) can run for up to GitHub's 6-hour
     # default before being killed.
-    timeout-minutes: 6
+    timeout-minutes: 10
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -46,7 +47,9 @@ jobs:
         # job-level timeout above existed. A step-specific timeout makes
         # that failure mode instantly identifiable in the Actions log
         # instead of a generic job-level timeout with no clue which step.
-        timeout-minutes: 2
+        # 2 minutes was too tight: on 2026-10-22 a slow Ubuntu package
+        # mirror made a healthy install take longer and the run failed.
+        timeout-minutes: 5
         run: |
           pip install -r requirements.txt
           playwright install --with-deps chromium
