@@ -177,6 +177,9 @@ which produces no email since nothing started.
 1. Create a free Sentry project, grab its DSN
 2. Add it as repo secret `SENTRY_DSN`
 3. Done — `gomining_maintenance.py` picks it up next run
+4. Recommended: in Sentry's alert for high-priority issues, also trigger on
+   **"issue regressed"**. Otherwise Sentry emails about a missed day only
+   the first time ever, not on later ones.
 
 ## Optional: Weekly veGOMINING lock re-extend
 
@@ -232,9 +235,12 @@ never your Secrets.
 
 ## If a run fails
 
-Each account gets 3 attempts per run before it's reported failed, so a
-one-off hiccup usually resolves itself silently. GitHub emails you once a
-run actually exhausts its attempts. Check the log:
+Each account gets 3 attempts per run, and several runs fire each night,
+so a one-off hiccup usually resolves itself silently. GitHub only emails
+you when the **last run of the night** fails and no run has tapped
+successfully yet that day (or straight away for a dead session). Earlier
+failures show as a yellow warning on a green run: nothing to do. Check
+the log:
 
 - **"session expired"**: that account's session is dead. Fix: recapture
   cookies. Set up with the wizard? Sign in again — it goes straight to a
