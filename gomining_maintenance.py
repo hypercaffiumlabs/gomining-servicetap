@@ -27,6 +27,12 @@ MONITOR_SLUG = "gomining-daily-maintenance"
 MAX_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 10
 
+# Set by maintenance.yml: "true" when a failure this run doesn't matter yet
+# (a later run tonight will retry, or today's tap already succeeded). Quiet
+# failures go to Sentry as warnings, which don't email, and skip the cron
+# check-in. Unset (e.g. lock_extend.yml, local runs) means loud, as before.
+TAP_QUIET = os.environ.get("TAP_QUIET", "").strip().lower() == "true"
+
 # GitHub Actions sets this automatically for every run -- no need to
 # hardcode a repo path, which keeps this script portable to any fork.
 REPO = os.environ.get("GITHUB_REPOSITORY")
@@ -261,13 +267,19 @@ def persist_cookies_to_cache(label, context):
             f.write(_fernet().encrypt(json.dumps(payload).encode("utf-8")))
         os.replace(tmp, path)
         print(f"[{label}] cookie store: saved this run's login (encrypted) for the next run.")
-        output_file = os.environ.get("GITHUB_OUTPUT")
-        if output_file:  # tells the workflow's "save cache" step there is something new to save
-            with open(output_file, "a", encoding="utf-8") as f:
-                f.write("cookies_updated=true\n")
+        # tells the workflow's "save cache" step there is something new to save
+        set_github_output("cookies_updated", "true")
     except Exception as exc:  # noqa: BLE001
         print(f"[{label}] WARNING: could not save the login ({type(exc).__name__}) -- "
               "the NEXT run may report a dead session.")
+
+
+def set_github_output(name, value):
+    """Expose a step output to the workflow (no-op outside GitHub Actions)."""
+    output_file = os.environ.get("GITHUB_OUTPUT")
+    if output_file:
+        with open(output_file, "a", encoding="utf-8") as f:
+            f.write(f"{name}={value}\n")
 
 
 def _find_field(node, name, depth=0):
@@ -895,8 +907,13 @@ def extend_locks_for_account(context, label):
             lock_extend_failures.append((label, pid_short, f"{position['amount_gmt']:.2f} GMT"))
 
 
-def report(label, message, level="error"):
-    """Print for the GitHub Actions log, and mirror to Sentry if configured."""
+def report(label, message, level="error", loud=False):
+    """Print for the GitHub Actions log, and mirror to Sentry if configured.
+
+    In a quiet run (TAP_QUIET) errors are sent as warnings unless `loud`.
+    """
+    if TAP_QUIET and level == "error" and not loud:
+        level = "warning"
     print(f"[{label}] {'FAILED' if level == 'error' else 'WARNING'}: {message}")
     if SENTRY_DSN:
         with sentry_sdk.new_scope() as scope:
@@ -970,9 +987,11 @@ def run_for_account(playwright, label, env_var, cookies_json):
                         # so return now instead of burning the rest.
                         # report() mirrors this to Sentry, where an alert
                         # rule turns it into an email.
+                        # Always loud, even in a quiet run: retrying can't fix it.
                         report(label, "session expired -- GoMining served its guest / "
                                       "signup page instead of the dashboard. Re-capture "
-                                      "cookies (capture-cookies skill).")
+                                      "cookies (capture-cookies skill).", loud=True)
+                        set_github_output("session_expired", "true")
                         return False
                     raise  # genuine load failure -- let the retry loop handle it
 
@@ -1044,34 +1063,50 @@ def run_for_account(playwright, label, env_var, cookies_json):
         browser.close()
 
 
+# Sentry's cron monitor answers one question: did a tap succeed today?
+# It expects ONE check-in per UTC day, any time between the 00:00 UTC reset
+# and 09:00 UTC (5am ET), which leaves the last scheduled run (05:15, which
+# GitHub has been starting as late as ~07:30) time to finish. No OK by then
+# means a missed day, and Sentry opens an issue (which emails). This is also
+# what catches GitHub never starting the last-chance run at all.
+#
+# One check-in per run, sent at the end (no IN_PROGRESS first, so a quiet
+# failure can simply send nothing). Runs at 23:xx UTC, before the reset,
+# never check in: their tap counts for the previous day. Nor does the
+# weekly lock job (RUN_LOCK_EXTEND), which isn't part of the nightly window.
+MONITOR_CONFIG = {
+    "schedule": {"type": "crontab", "value": "0 0 * * *"},
+    "timezone": "UTC",
+    "checkin_margin": 540,
+    "max_runtime": 10,
+    "failure_issue_threshold": 1,
+    "recovery_threshold": 1,
+}
+
+
+def monitor_checkin(ok, started):
+    """Send this run's cron check-in to Sentry, if this run should send one."""
+    if not SENTRY_DSN or RUN_LOCK_EXTEND or datetime.now(timezone.utc).hour == 23:
+        return
+    if not ok and TAP_QUIET:
+        return  # a later run will retry; if none succeeds, Sentry flags the missed day
+    capture_checkin(
+        monitor_slug=MONITOR_SLUG,
+        status=MonitorStatus.OK if ok else MonitorStatus.ERROR,
+        duration=time.monotonic() - started,
+        monitor_config=MONITOR_CONFIG,
+    )
+
+
 def main():
-    check_in_id = None
-    if SENTRY_DSN:
-        check_in_id = capture_checkin(
-            monitor_slug=MONITOR_SLUG,
-            status=MonitorStatus.IN_PROGRESS,
-            monitor_config={
-                # Mirrors .github/workflows/maintenance.yml's cron exactly.
-                "schedule": {"type": "crontab", "value": "15 23,0-5 * * *"},
-                "timezone": "UTC",
-                # GitHub's scheduler is best-effort and we've directly
-                # observed 45+ min delays -- this must stay looser than
-                # that or Sentry will cry wolf on normal lag.
-                "checkin_margin": 60,
-                # Retries can now push a real run close to the job-level
-                # timeout (see maintenance.yml); keep headroom above that.
-                "max_runtime": 8,
-                "failure_issue_threshold": 1,
-                "recovery_threshold": 1,
-            },
-        )
+    started = time.monotonic()
 
     if not ACCOUNTS:
         msg = "no accounts configured. Set GOMINING_ACCOUNT_LABELS (comma-separated, e.g. \"PRIMARY,SECONDARY\") in the workflow env."
         print(f"FAILED: {msg}")
         if SENTRY_DSN:
             sentry_sdk.capture_message(msg, level="error")
-            capture_checkin(monitor_slug=MONITOR_SLUG, check_in_id=check_in_id, status=MonitorStatus.ERROR)
+            monitor_checkin(False, started)
             sentry_sdk.flush()
         sys.exit(1)
 
@@ -1080,7 +1115,7 @@ def main():
         print(f"FAILED: {store_error}")
         if SENTRY_DSN:
             sentry_sdk.capture_message(store_error, level="error")
-            capture_checkin(monitor_slug=MONITOR_SLUG, check_in_id=check_in_id, status=MonitorStatus.ERROR)
+            monitor_checkin(False, started)
             sentry_sdk.flush()
         sys.exit(1)
 
@@ -1118,11 +1153,7 @@ def main():
     overall_ok = all(results.values()) and not lock_extend_failures
 
     if SENTRY_DSN:
-        capture_checkin(
-            monitor_slug=MONITOR_SLUG,
-            check_in_id=check_in_id,
-            status=MonitorStatus.OK if overall_ok else MonitorStatus.ERROR,
-        )
+        monitor_checkin(overall_ok, started)
         sentry_sdk.flush()
 
     if not overall_ok:

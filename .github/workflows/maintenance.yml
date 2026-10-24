@@ -34,6 +34,52 @@ jobs:
     # default before being killed.
     timeout-minutes: 10
     steps:
+      # Quiet vs loud failures. Several runs fire each night, and a tap only
+      # has to succeed once per UTC day. So a failed run only fails the job
+      # (and sends GitHub's "Run failed" email) when it matters:
+      #   - it's the last chance of the night (UTC hour 5-22: the 05:15 slot,
+      #     which GitHub often starts an hour or two late) or a manual run, AND
+      #   - no run has tapped successfully yet this UTC day.
+      # Earlier failures are "quiet": the job ends green with a warning and
+      # the next hourly run tries again. Two things stay loud regardless: a
+      # dead session (retrying can't fix it, see the last step) and Sentry's
+      # "no successful tap tonight" cron alert, which catches the case where
+      # GitHub never starts the last-chance run at all (see main() in
+      # gomining_maintenance.py).
+      - name: Work out where this run sits in tonight's window
+        id: window
+        run: |
+          hour=$(date -u +%-H)
+          echo "today=$(date -u +%F)" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || { [ "$hour" -ge 5 ] && [ "$hour" -lt 23 ]; }; then
+            echo "last_chance=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "last_chance=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check whether today's tap already succeeded
+        # A successful tap leaves a tiny marker in the Actions cache, keyed
+        # by UTC date (saved near the end of this job). Later runs still tap
+        # as normal -- each run refreshes the rotating login, which keeps the
+        # gap between refreshes short -- they just fail quietly.
+        id: done
+        uses: actions/cache/restore@v4
+        with:
+          path: tap-done
+          key: tap-done-${{ steps.window.outputs.today }}
+          lookup-only: true
+
+      - name: Decide whether a failure should be loud
+        id: mode
+        run: |
+          if [ "${{ steps.window.outputs.last_chance }}" = "true" ] && [ "${{ steps.done.outputs.cache-hit }}" != "true" ]; then
+            echo "quiet=false" >> "$GITHUB_OUTPUT"
+            echo "Failures this run are LOUD (last chance tonight, no successful tap yet today)."
+          else
+            echo "quiet=true" >> "$GITHUB_OUTPUT"
+            echo "Failures this run are quiet (a later run will retry, or today's tap already succeeded)."
+          fi
+
       - name: Check out repo
         uses: actions/checkout@v4
 
@@ -42,17 +88,33 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Reuse the downloaded Chromium (Actions cache)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
       - name: Install dependencies
+        id: install
         # This step hung for 49+ minutes once (2026-08-17) before the
         # job-level timeout above existed. A step-specific timeout makes
         # that failure mode instantly identifiable in the Actions log
         # instead of a generic job-level timeout with no clue which step.
         # 2 minutes was too tight: on 2026-10-22 a slow Ubuntu package
         # mirror made a healthy install take longer and the run failed.
+        # 5 wasn't always enough either (2026-10-23: the mirror crawled at
+        # ~75 KB/s, mostly downloading optional fonts), so the Ubuntu
+        # packages are now only installed if Chromium can't start without
+        # them; the runner image normally already has everything it needs.
         timeout-minutes: 5
+        continue-on-error: ${{ steps.mode.outputs.quiet == 'true' }}
         run: |
           pip install -r requirements.txt
-          playwright install --with-deps chromium
+          playwright install chromium
+          if ! python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); p.chromium.launch().close(); p.stop()"; then
+            echo "Chromium can't start yet -- installing its Ubuntu packages."
+            playwright install-deps chromium
+          fi
 
       - name: Restore the saved GoMining login (Actions cache)
         # Cache mode only (COOKIE_STORE=cache, set per-repo by the setup wizard): GoMining
@@ -69,7 +131,13 @@ jobs:
 
       - name: Run maintenance script
         id: tap
+        if: steps.install.outcome == 'success'
+        continue-on-error: ${{ steps.mode.outputs.quiet == 'true' }}
         env:
+          # Tells the script whether a failure this run is quiet (see the
+          # top of this job): quiet failures go to Sentry as warnings and
+          # skip the cron check-in instead of reporting an error.
+          TAP_QUIET: ${{ steps.mode.outputs.quiet }}
           # Comma-separated account labels. For each label, add a matching
           # GOMINING_COOKIES_<LABEL> secret below (e.g. a third account
           # needs GOMINING_ACCOUNT_LABELS: PRIMARY,SECONDARY,THIRD plus a
@@ -103,8 +171,31 @@ jobs:
           path: cookie-cache
           key: gomining-login-${{ github.run_id }}-${{ github.run_attempt }}
 
+      - name: Mark today's tap as done (Actions cache)
+        if: steps.tap.outcome == 'success' && steps.done.outputs.cache-hit != 'true'
+        run: mkdir -p tap-done && date -u > tap-done/at
+
+      - name: Save the done marker
+        if: steps.tap.outcome == 'success' && steps.done.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: tap-done
+          key: tap-done-${{ steps.window.outputs.today }}
+
+      - name: Note a quiet failure
+        if: steps.install.outcome == 'failure' || steps.tap.outcome == 'failure'
+        run: echo "::warning::This run failed, but quietly -- a later run tonight will retry, or today's tap already succeeded. No action needed unless the last run of the night fails too."
+
+      - name: Fail loudly on a dead session
+        # A dead session fails identically on every retry, so there's no
+        # point waiting for the last chance -- re-capture the cookies now.
+        if: steps.tap.outputs.session_expired == 'true'
+        run: |
+          echo "::error::A GoMining session expired -- re-capture cookies (capture-cookies skill). See the run log for which account."
+          exit 1
+
       - name: Upload debug artifacts on failure
-        if: failure()
+        if: failure() || steps.install.outcome == 'failure' || steps.tap.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
           name: debug-artifacts
