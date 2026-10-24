@@ -44,6 +44,45 @@
   .warn { border-left: 3px solid #d29922; padding-left: 12px; color: var(--dim); font-size: 0.92rem; }
   footer { color: var(--dim); font-size: 0.85rem; margin-top: 32px; text-align: center; }
 </style>
+<!-- anonymous visit counts: PostHog, cookieless -->
+<script>
+// Anonymous visit counts (PostHog in cookieless mode): no cookies, no stored IP address, no
+// screen recording, and nothing typed or pasted on the page is ever sent. Page addresses are
+// trimmed before sending (query strings and #fragments dropped, except utm_* tags and simple
+// #tab names), so share links and anything else carried in a URL never leave the browser.
+// Only runs on HOST, so forks and local copies send nothing.
+(function () {
+  if (location.hostname !== 'hypercaffiumlabs.github.io') return;
+  !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+  function trim(u, keepQuery) {
+    try {
+      var x = new URL(u), q = new URLSearchParams();
+      if (keepQuery) x.searchParams.forEach(function (v, k) { if (/^utm_/.test(k)) q.append(k, v); });
+      var h = keepQuery && /^#[A-Za-z0-9_-]{1,40}$/.test(x.hash) ? x.hash : '';
+      q = q.toString();
+      return x.origin + x.pathname + (q ? '?' + q : '') + h;
+    } catch (err) { return null; }
+  }
+  posthog.init('phc_DdB9QwSE7UQQXKvj2M6V5Ysvd9KnzbebogUmXV7e57N3', {
+    api_host: 'https://us.i.posthog.com',
+    cookieless_mode: 'always',
+    autocapture: false,
+    capture_pageview: true,
+    capture_pageleave: true,
+    disable_session_recording: true,
+    disable_surveys: true,
+    advanced_disable_flags: true,
+    before_send: function (e) {
+      if (!e || !e.properties) return e;
+      var p = e.properties;
+      if (p.$current_url) p.$current_url = trim(p.$current_url, true);
+      if (p.$referrer && p.$referrer !== '$direct') p.$referrer = trim(p.$referrer, false);
+      delete p.$set; delete p.$set_once; delete e.$set; delete e.$set_once;
+      return e;
+    }
+  });
+})();
+</script>
 </head>
 <body>
 <main>
@@ -79,7 +118,8 @@
   </div>
 
   <footer>
-    Runs entirely in your own browser — nothing here is sent anywhere except your own clipboard.
+    Your login runs entirely in your own browser and only ever goes to your own clipboard.
+    <br>This page counts anonymous visits (PostHog, no cookies, no IP addresses kept); nothing you type or paste is ever sent.
     <br>Part of <a href="https://github.com/hypercaffiumlabs/gomining-servicetap">hypercaffiumlabs/gomining-servicetap</a>.
   </footer>
 </main>
