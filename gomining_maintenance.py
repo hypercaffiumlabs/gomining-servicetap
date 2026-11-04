@@ -925,10 +925,14 @@ probe_done = []
 
 def _probe_text(text):
     """A short, digit-free, single-line version of some page text, or None if it shouldn't be logged."""
-    text = re.sub(r"\d", "", " ".join((text or "").split()))[:60].strip(" .,:-")
-    if not text or "@" in text or not PROBE_WORDS.search(text):
+    words = " ".join((text or "").split())
+    if "@" in words or not PROBE_WORDS.search(words):
         return None
-    return text
+    # Keep only plain dictionary-looking words: drops numbers, addresses, codes and ids
+    # (anything with a digit, or longer than a normal word).
+    kept = [w for w in words.split(" ") if re.fullmatch(r"[A-Za-z][A-Za-z'&/()-]{0,19}[.,:!?]?", w)]
+    text = " ".join(kept)[:60].strip(" .,:-")
+    return text or None
 
 
 def _probe_key_names(node, out, prefix="", depth=0):
@@ -937,8 +941,9 @@ def _probe_key_names(node, out, prefix="", depth=0):
         return
     if isinstance(node, dict):
         for key, value in node.items():
-            name = f"{prefix}.{key}" if prefix else str(key)
-            out.add(re.sub(r"\d", "#", name))
+            key = key if re.fullmatch(r"[A-Za-z_]{1,40}", str(key)) else "*"  # dynamic keys (ids, addresses)
+            name = f"{prefix}.{key}" if prefix else key
+            out.add(name)
             _probe_key_names(value, out, name, depth + 1)
     elif isinstance(node, list) and node:
         _probe_key_names(node[0], out, prefix + "[]", depth + 1)
@@ -983,7 +988,11 @@ def probe_reward_settings(context, label):
         try:
             for href in page.eval_on_selector_all("a[href]", "els => els.map(e => e.getAttribute('href'))"):
                 if href and href.startswith("/") and "@" not in href:
-                    out.add(re.sub(r"\d+", "#", href.split("?")[0]))
+                    # Only plain lowercase route words survive; any other segment (ids,
+                    # referral codes, usernames) becomes "*".
+                    segments = href.split("?")[0].split("#")[0].strip("/").split("/")
+                    out.add("/" + "/".join(seg if re.fullmatch(r"[a-z][a-z-]{0,29}", seg) else "*"
+                                           for seg in segments))
         except Exception:
             pass
         return sorted(out)[:80]
@@ -1016,7 +1025,8 @@ def probe_reward_settings(context, label):
                 print(f"[{label}] probe:   links {page_links}")
                 for href in page_links:
                     if PROBE_WORDS.search(href) or re.search(r"profile|account|miner", href, re.I):
-                        queue.append("https://app.gomining.com" + href.replace("#", "1"))
+                        if "*" not in href:
+                            queue.append("https://app.gomining.com" + href)
             # Open (never confirm) anything that looks like the reward-setting control.
             clicked = 0
             for el in page.locator("button, [role=button], [role=switch], a, mat-slide-toggle").all()[:200]:
