@@ -3,6 +3,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -907,6 +908,154 @@ def extend_locks_for_account(context, label):
             lock_extend_failures.append((label, pid_short, f"{position['amount_gmt']:.2f} GMT"))
 
 
+# ---- TEMPORARY discovery probe: where does GoMining keep the reward (TH vs GMT) setting? ----
+#
+# Started by hand only (workflow_dispatch input "probe_reward_settings"); a scheduled run never
+# sets it. Read-only: it opens pages and, at most, opens a reward-settings dialog, but never
+# presses save/confirm. Actions logs on this public repo are world-readable, so it logs NAMES
+# only -- API paths, JSON key names, and short button/heading texts with every digit removed --
+# never values, balances, ids, cookies or e-mail addresses. Delete once the setting is found.
+PROBE_REWARD_SETTINGS = os.environ.get("PROBE_REWARD_SETTINGS", "").strip().lower() == "true"
+PROBE_WORDS = re.compile(r"reinvest|reward|payout|auto|convert|currency|setting|preference|"
+                         r"compound|upgrade|\bTH\b|GMT|GOMINING|BTC|bitcoin|wallet", re.I)
+PROBE_CLICK_WORDS = re.compile(r"reinvest|reward setting|payout setting|reward mode|reward currency", re.I)
+PROBE_NEVER_CLICK = re.compile(r"save|confirm|apply|submit|buy|withdraw|deposit|send|swap|lock|delete", re.I)
+probe_done = []
+
+
+def _probe_text(text):
+    """A short, digit-free, single-line version of some page text, or None if it shouldn't be logged."""
+    text = re.sub(r"\d", "", " ".join((text or "").split()))[:60].strip(" .,:-")
+    if not text or "@" in text or not PROBE_WORDS.search(text):
+        return None
+    return text
+
+
+def _probe_key_names(node, out, prefix="", depth=0):
+    """Collect JSON key *paths* (never values), bounded."""
+    if depth > 4 or len(out) > 60:
+        return
+    if isinstance(node, dict):
+        for key, value in node.items():
+            name = f"{prefix}.{key}" if prefix else str(key)
+            out.add(re.sub(r"\d", "#", name))
+            _probe_key_names(value, out, name, depth + 1)
+    elif isinstance(node, list) and node:
+        _probe_key_names(node[0], out, prefix + "[]", depth + 1)
+
+
+def probe_reward_settings(context, label):
+    """Log where the reward-setting UI and API live (names only). Best-effort, never raises."""
+    probe_done.append(label)
+    seen = {}  # "METHOD /api/path" -> sorted key names (for matching paths) or None
+
+    def on_response(response):
+        try:
+            path = urlsplit(response.url).path
+            if not path.startswith("/api/") or len(seen) > 80:
+                return
+            entry = f"{response.request.method} {re.sub(r'[0-9a-f]{8,}|\d+', '#', path)}"
+            if entry in seen:
+                return
+            seen[entry] = None
+            if PROBE_WORDS.search(path) or re.search(r"user|miner|nft", path, re.I):
+                keys = set()
+                _probe_key_names(response.json(), keys)
+                seen[entry] = sorted(keys)[:60]
+        except Exception:
+            pass
+
+    def page_texts(page):
+        texts = set()
+        for selector in ("button", "a", "[role=tab]", "[role=switch]", "label", "h1", "h2", "h3",
+                         "mat-slide-toggle", "input[type=radio]", "[class*=reinvest]", "[class*=reward]"):
+            try:
+                for el in page.locator(selector).all()[:150]:
+                    t = _probe_text(el.inner_text(timeout=500))
+                    if t:
+                        texts.add(f"{selector}: {t}")
+            except Exception:
+                pass
+        return sorted(texts)[:60]
+
+    def links(page):
+        out = set()
+        try:
+            for href in page.eval_on_selector_all("a[href]", "els => els.map(e => e.getAttribute('href'))"):
+                if href and href.startswith("/") and "@" not in href:
+                    out.add(re.sub(r"\d+", "#", href.split("?")[0]))
+        except Exception:
+            pass
+        return sorted(out)[:80]
+
+    page = None
+    try:
+        page = context.new_page()
+        page.on("response", on_response)
+        visited = set()
+        queue = [DASHBOARD_URL]
+        first_links = []
+        while queue and len(visited) < 6:
+            url = queue.pop(0)
+            path = urlsplit(url).path
+            if path in visited:
+                continue
+            visited.add(path)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(6000)
+            except Exception as exc:
+                print(f"[{label}] probe: {path} did not load ({type(exc).__name__})")
+                continue
+            print(f"[{label}] probe: PAGE {path} -> landed on {re.sub(r'[0-9]+', '#', urlsplit(page.url).path)}")
+            for t in page_texts(page):
+                print(f"[{label}] probe:   text {t}")
+            page_links = links(page)
+            if not first_links:
+                first_links = page_links
+                print(f"[{label}] probe:   links {page_links}")
+                for href in page_links:
+                    if PROBE_WORDS.search(href) or re.search(r"profile|account|miner", href, re.I):
+                        queue.append("https://app.gomining.com" + href.replace("#", "1"))
+            # Open (never confirm) anything that looks like the reward-setting control.
+            clicked = 0
+            for el in page.locator("button, [role=button], [role=switch], a, mat-slide-toggle").all()[:200]:
+                if clicked >= 2:
+                    break
+                try:
+                    raw = " ".join(el.inner_text(timeout=300).split())
+                except Exception:
+                    continue
+                if not PROBE_CLICK_WORDS.search(raw) or PROBE_NEVER_CLICK.search(raw):
+                    continue
+                if el.get_attribute("role") == "switch" or el.evaluate("e => e.tagName").lower() == "mat-slide-toggle":
+                    print(f"[{label}] probe:   (a switch '{_probe_text(raw)}' -- not touched)")
+                    continue
+                try:
+                    el.click(timeout=3000)
+                    clicked += 1
+                    page.wait_for_timeout(3000)
+                    print(f"[{label}] probe:   OPENED '{_probe_text(raw)}' -> now at "
+                          f"{re.sub(r'[0-9]+', '#', urlsplit(page.url).path)}")
+                    for t in page_texts(page):
+                        print(f"[{label}] probe:     text {t}")
+                    page.keyboard.press("Escape")
+                    page.wait_for_timeout(1000)
+                except Exception as exc:
+                    print(f"[{label}] probe:   could not open '{_probe_text(raw)}' ({type(exc).__name__})")
+        for entry in sorted(seen):
+            keys = seen[entry]
+            print(f"[{label}] probe: API {entry}" + (f" keys={keys}" if keys else ""))
+    except Exception as exc:
+        print(f"[{label}] probe failed ({type(exc).__name__}); tap unaffected.")
+    finally:
+        if page is not None:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+
 def report(label, message, level="error", loud=False):
     """Print for the GitHub Actions log, and mirror to Sentry if configured.
 
@@ -1055,6 +1204,8 @@ def run_for_account(playwright, label, env_var, cookies_json):
                 read_lock_model_on_fresh_page(context, label)
             if RUN_LOCK_EXTEND:
                 extend_locks_for_account(context, label)
+            if PROBE_REWARD_SETTINGS and not probe_done:
+                probe_reward_settings(context, label)
             if COOKIE_STORE == "cache":
                 persist_cookies_to_cache(label, context)
             else:
