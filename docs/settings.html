@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ServiceTap — Settings</title>
+<link rel="stylesheet" href="servicetap.css">
+<script src="reward-rotation.js"></script>
+<!-- anonymous visit counts: PostHog, cookieless (same setup and rules as setup.html) -->
+<script>
+(function () {
+  if (location.hostname !== 'hypercaffiumlabs.github.io') return;
+  !function(t,e){var o,n,p,r;e.__SV||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing has_opted_out_capturing opt_in_capturing reset".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
+  function trim(u, keepQuery) {
+    try {
+      var x = new URL(u), q = new URLSearchParams();
+      if (keepQuery) x.searchParams.forEach(function (v, k) { if (/^utm_/.test(k)) q.append(k, v); });
+      var h = keepQuery && /^#[A-Za-z0-9_-]{1,40}$/.test(x.hash) ? x.hash : '';
+      q = q.toString();
+      return x.origin + x.pathname + (q ? '?' + q : '') + h;
+    } catch (err) { return null; }
+  }
+  posthog.init('phc_DdB9QwSE7UQQXKvj2M6V5Ysvd9KnzbebogUmXV7e57N3', {
+    api_host: 'https://us.i.posthog.com', cookieless_mode: 'always', autocapture: false,
+    capture_pageview: true, capture_pageleave: true, disable_session_recording: true,
+    disable_surveys: true, advanced_disable_flags: true,
+    before_send: function (e) {
+      if (!e || !e.properties) return e;
+      var p = e.properties;
+      if (p.$current_url) p.$current_url = trim(p.$current_url, true);
+      if (p.$referrer && p.$referrer !== '$direct') p.$referrer = trim(p.$referrer, false);
+      delete p.$set; delete p.$set_once; delete e.$set; delete e.$set_once;
+      return e;
+    }
+  });
+})();
+</script>
+</head>
+<body>
+<main>
+  <h1>⚙️ ServiceTap Settings</h1>
+  <p class="lede">Change the settings of your <a href="https://github.com/hypercaffiumlabs/gomining-servicetap" target="_blank" rel="noopener">GoMining ServiceTap</a> copy after setup. New here? Start with the <a href="setup.html">setup wizard</a>.</p>
+
+  <div id="global-err"></div>
+
+  <section class="panel" id="panel-signin">
+    <h2>Sign in with GitHub</h2>
+    <p>Same as in the setup wizard: GitHub shows you a short code, you approve it on GitHub's own website, and nothing is kept after you close this tab.</p>
+    <div id="signin-idle"><button id="btn-signin">Sign in with GitHub</button></div>
+    <div id="signin-waiting" hidden>
+      <p>Go to <a id="verify-link" href="#" target="_blank" rel="noopener"></a> and enter this code:</p>
+      <div class="code-box" id="user-code">••••••••</div>
+      <p class="row"><span class="spinner"></span> <span id="signin-status">Waiting for you to approve on GitHub…</span></p>
+    </div>
+    <div id="signin-done" hidden class="ok"></div>
+  </section>
+
+  <section class="panel" id="panel-repo" hidden>
+    <h2>Which copy?</h2>
+    <p>You can change more than one copy of ServiceTap. Pick the one to change:</p>
+    <label class="field"><span>Repository</span><select id="repo-pick"></select></label>
+    <button id="btn-repo">Open</button>
+  </section>
+
+  <section class="panel" id="panel-settings" hidden>
+    <h2>Reward rotation: TH and GOMINING</h2>
+    <p class="dim">Each day, GoMining sends your mining reward either to <strong>TH</strong> on one of your miners or to <strong>GOMINING</strong> tokens in your wallet (GoMining → Settings → Reinvestment). ServiceTap can switch between the two for you, e.g. 5 days TH, then 5 days GOMINING, repeating. Use 0 for "never", or clear both boxes to turn it off. The switch happens in the same nightly run as the service button, before the morning payout. Reinvestment itself must stay switched on in GoMining.</p>
+    <p class="dim" id="repo-note"></p>
+    <div id="account-blocks"></div>
+    <button id="btn-save">Save</button>
+    <div id="save-log" style="margin-top:12px;"></div>
+  </section>
+
+  <footer>
+    Your GitHub sign-in happens directly with GitHub; this page never sees your GoMining login or password.
+    <br>Settings are saved as plain (non-secret) Variables in your repo, visible under Settings → Secrets and variables → Actions → Variables.
+    <br>Part of <a href="https://github.com/hypercaffiumlabs/gomining-servicetap" target="_blank" rel="noopener">hypercaffiumlabs/gomining-servicetap</a>.
+  </footer>
+</main>
+
+<script>
+"use strict";
+
+const REPO_NAME = "gomining-servicetap";
+const WORKER_BASE = "https://gomining-servicetap-setup.hivementalityhoney.workers.dev";
+const WORKFLOW_FILE = ".github/workflows/maintenance.yml";
+
+let accessToken = null;
+let ghLogin = null;
+let repo = null;          // { owner, name }
+let accounts = [];        // [{ label, current, block }]
+
+function $(id) { return document.getElementById(id); }
+function show(name) { for (const el of document.querySelectorAll(".panel")) if (el.id !== "panel-signin") el.hidden = el.id !== "panel-" + name; }
+function fatal(msg) {
+  const d = document.createElement("div");
+  d.className = "err";
+  d.textContent = "⚠️ " + msg;
+  $("global-err").replaceChildren(d);
+}
+function clearFatal() { $("global-err").innerHTML = ""; }
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+async function gh(path, opts = {}) {
+  return fetch("https://api.github.com" + path, {
+    ...opts,
+    headers: {
+      "Accept": "application/vnd.github+json",
+      "Authorization": "Bearer " + accessToken,
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(opts.body ? { "Content-Type": "application/json" } : {}),
+      ...(opts.headers || {}),
+    },
+  });
+}
+
+// ---- Sign in (GitHub device flow through the wizard's relay; same flow as setup.html) ----
+async function startSignIn() {
+  clearFatal();
+  $("btn-signin").disabled = true;
+  let codeRes = null;
+  for (const wait of [0, 3000, 6000, 12000]) {
+    await sleep(wait);
+    try { codeRes = await fetch(WORKER_BASE + "/device/code", { method: "POST" }); } catch (e) { codeRes = null; }
+    if (codeRes && codeRes.status !== 429 && codeRes.status < 500) break;
+  }
+  const data = codeRes && codeRes.ok ? await codeRes.json() : null;
+  if (!data || !data.device_code) {
+    fatal("GitHub sign-in could not start" + (codeRes ? ` (HTTP ${codeRes.status})` : "") + ". Try again in a minute.");
+    $("btn-signin").disabled = false;
+    return;
+  }
+  $("signin-idle").hidden = true;
+  $("signin-waiting").hidden = false;
+  $("user-code").textContent = data.user_code;
+  $("verify-link").href = data.verification_uri;
+  $("verify-link").textContent = data.verification_uri;
+
+  let interval = (data.interval || 5) * 1000;
+  const deadline = Date.now() + (data.expires_in || 900) * 1000;
+  while (Date.now() < deadline) {
+    await sleep(interval);
+    let tok;
+    try {
+      const res = await fetch(WORKER_BASE + "/device/token", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_code: data.device_code }),
+      });
+      if (res.status === 429 || res.status >= 500) { interval += 2000; continue; }
+      tok = await res.json();
+    } catch (e) { continue; }
+    if (tok.access_token) {
+      accessToken = tok.access_token;
+      ghLogin = (await (await gh("/user")).json()).login;
+      $("signin-waiting").hidden = true;
+      $("signin-done").hidden = false;
+      $("signin-done").textContent = "✓ Signed in as " + ghLogin;
+      await findRepos();
+      return;
+    }
+    if (tok.error === "authorization_pending") continue;
+    if (tok.error === "slow_down") { interval += 5000; continue; }
+    fatal(tok.error === "expired_token" ? "That code expired. Click Sign in again."
+      : tok.error === "access_denied" ? "Sign-in was declined. Click Sign in again if that was a mistake."
+      : "Sign-in failed: " + (tok.error_description || tok.error || "unknown error"));
+    break;
+  }
+  $("signin-idle").hidden = false;
+  $("signin-waiting").hidden = true;
+  $("btn-signin").disabled = false;
+}
+
+// ---- Find the user's copies (their fork, plus any they can change in an organization) ----
+async function findRepos() {
+  const found = [];
+  for (let page = 1; page <= 10; page++) {
+    const res = await gh(`/user/repos?per_page=100&page=${page}&affiliation=owner,organization_member,collaborator`);
+    if (!res.ok) break;
+    const list = await res.json();
+    for (const r of list) if (r.name === REPO_NAME && r.permissions && r.permissions.push) found.push(r.full_name);
+    if (list.length < 100) break;
+  }
+  if (found.length === 0) {
+    fatal(`No copy of ${REPO_NAME} that you can change was found for ${ghLogin}. Set one up first with the setup wizard, or sign in with the GitHub account it lives on. (A copy in an organization may need you to approve this sign-in for that organization on GitHub's sign-in page.)`);
+    return;
+  }
+  if (found.length === 1) return openRepo(found[0]);
+  $("repo-pick").replaceChildren(...found.map((n) => Object.assign(document.createElement("option"), { value: n, textContent: n })));
+  show("repo");
+}
+
+async function openRepo(fullName) {
+  clearFatal();
+  const [owner, name] = fullName.split("/");
+  repo = { owner, name };
+  try {
+    let labels = ["MAIN"];
+    const wf = await gh(`/repos/${owner}/${name}/contents/${WORKFLOW_FILE}`);
+    if (wf.ok) {
+      const text = decodeURIComponent(escape(atob((await wf.json()).content.replace(/\n/g, ""))));
+      const m = text.match(/^[ \t]*GOMINING_ACCOUNT_LABELS:\s*([A-Za-z0-9_,]+)/m);
+      if (m) labels = m[1].split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+      if (!/\bGH_VARS:/.test(text)) {
+        fatal(`Your copy (${fullName}) is older than this feature. Update it first: open it on GitHub and press "Sync fork" → "Update branch", then reload this page.`);
+        return;
+      }
+    }
+    const vars = await RewardRotation.readVars(gh, owner, name);
+    $("repo-note").textContent = `Changing ${fullName}.`;
+    $("account-blocks").innerHTML = "";
+    accounts = labels.map((label) => {
+      const current = RewardRotation.configFrom(vars, label);
+      const block = document.createElement("div");
+      block.className = "account-block";
+      block.innerHTML = `<h3>${label}</h3><p class="dim rr-now"></p>${RewardRotation.fieldsHtml(current)}`;
+      block.querySelector(".rr-now").textContent = current ? "Now: " + RewardRotation.describe(current) : "Now: off.";
+      $("account-blocks").appendChild(block);
+      RewardRotation.wirePreview(block, current);
+      return { label, current, block };
+    });
+    show("settings");
+  } catch (e) {
+    fatal(`Could not open ${fullName}: ${e.message}.`);
+  }
+}
+
+async function save() {
+  clearFatal();
+  const log = $("save-log");
+  log.innerHTML = "";
+  const line = (msg, cls) => { const p = document.createElement("div"); p.className = "log-line" + (cls ? " " + cls : ""); p.textContent = msg; log.appendChild(p); };
+  const plans = [];
+  for (const a of accounts) {
+    try { plans.push({ a, values: RewardRotation.readFields(a.block) }); }
+    catch (e) { fatal(`${a.label}: ${e.message}.`); return; }
+  }
+  $("btn-save").disabled = true;
+  try {
+    for (const { a, values } of plans) {
+      if (!values && !a.current) continue; // off and staying off: nothing to write
+      const summary = await RewardRotation.save(gh, repo.owner, repo.name, a.label, values, a.current);
+      line(`✓ ${a.label}: ${summary === "turned off" ? "Turned off." : summary}`, "ok");
+    }
+    if (!log.children.length) line("Nothing to change.");
+    else line("Saved. The next nightly run (from about 7:15pm US Eastern) applies it.");
+    await openRepo(repo.owner + "/" + repo.name); // show the saved state
+  } catch (e) {
+    line("✗ " + e.message, "err");
+    fatal("Saving stopped partway. Nothing is broken: fix the problem and press Save again.");
+  }
+  $("btn-save").disabled = false;
+}
+
+$("btn-signin").addEventListener("click", startSignIn);
+$("btn-repo").addEventListener("click", () => openRepo($("repo-pick").value));
+$("btn-save").addEventListener("click", save);
+</script>
+</body>
+</html>
