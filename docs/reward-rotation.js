@@ -88,7 +88,7 @@ const RewardRotation = (() => {
           <label class="field rr-num"><span>GOMINING days</span>
             <input type="number" class="rr-gmt" min="0" max="${MAX_DAYS}" step="1" inputmode="numeric" value="${current ? esc(current.gmt) : ""}"></label>
         </div>
-        <label class="field"><span>Miner that gets the TH (optional, its number, e.g. 123456; blank = your biggest miner)</span>
+        <label class="field"><span>Miner that gets the TH (optional, its number, e.g. 123456; blank = your biggest miner). Miners on GoMining's monthly TH subscription can't receive reinvested TH, so pick one that isn't.</span>
           <input type="text" class="rr-miner" inputmode="numeric" placeholder="biggest miner" value="${current ? esc(current.miner) : ""}"></label>
         <label class="field"><span>Start with</span>
           <select class="rr-start">${keep}
