@@ -1059,15 +1059,18 @@ def apply_reward_rotation(context, label):
     want_name = "TH" if want == "TH" else "GOMINING"
     where = f"day {n} of {length} on {want_name}" if config["th_days"] and config["gmt_days"] else f"always {want_name}"
     page = None
+    step = "opening the Settings pop-up"  # named in the warning if anything below times out
     try:
         page = context.new_page()
         page.goto(REWARD_SETTINGS_URL, wait_until="domcontentloaded", timeout=30000)
+        step = "waiting for the Reinvestment switch"
         page.locator(REINVEST_SWITCH).wait_for(state="attached", timeout=30000)
         page.wait_for_timeout(1500)  # let the saved settings load into the switch and radios
         if not page.locator(REINVEST_SWITCH).is_checked():
             report(label, "reward rotation skipped -- Reinvestment is switched off in GoMining's "
                           "reward settings. Turn it on there to use the rotation.", level="warning")
             return
+        step = "waiting for the GOMINING / TH choices"
         page.locator(REINVEST_RADIO.format("token")).wait_for(state="attached", timeout=10000)
         on_th = page.locator(REINVEST_RADIO.format("nft")).is_checked()
 
@@ -1085,16 +1088,21 @@ def apply_reward_rotation(context, label):
 
         picker = page.locator(MINER_PICKER)
         if on_th:
+            step = "reading the miner currently getting TH"
             chosen = picker.locator(".ng-value")
             chosen_text = chosen.first.inner_text(timeout=3000) if chosen.count() else ""
             if not config["miner"] or re.search(rf"#\s*{config['miner']}\b", chosen_text):
                 print(f"[{label}] reward rotation: {where} -- already on TH.")
                 return
         else:
+            step = "choosing TH"
             page.locator(f"label:has({REINVEST_RADIO.format('nft')})").click()
+        step = "opening the miner list"
         picker.locator("ng-select").first.click(timeout=10000)
         options = picker.locator(".ng-option")
+        step = "waiting for miners to appear in the list"
         options.first.wait_for(state="visible", timeout=10000)
+        step = "picking the miner"
         index, note = choose_miner_option(options.all_inner_texts(), config["miner"])
         if index is None:
             # Nothing was saved yet (GoMining only saves once a miner is picked).
@@ -1106,7 +1114,8 @@ def apply_reward_rotation(context, label):
         else:
             print(f"[{label}] reward rotation: {where} -- switched to TH on {note}.")
     except Exception as exc:
-        report(label, f"reward rotation failed ({type(exc).__name__}); the tap is unaffected.", level="warning")
+        report(label, f"reward rotation failed while {step} ({type(exc).__name__}); the tap is unaffected.",
+               level="warning")
     finally:
         if page is not None:
             try:
