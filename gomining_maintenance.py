@@ -1027,12 +1027,12 @@ def choose_miner_option(option_texts, wanted=None):
     return best, "the biggest listed miner"
 
 
-def _wait_for_reward_save(page, click, want_gmt):
+def _wait_for_reward_save(page, click, want_gmt, timeout=15000):
     """Run `click`, then confirm GoMining saved the expected choice. Returns an error or None."""
     try:
         with page.expect_response(
             lambda r: urlsplit(r.url).path == REWARD_SAVE_PATH and r.request.method == "POST",
-            timeout=15000,
+            timeout=timeout,
         ) as info:
             click()
         response = info.value
@@ -1043,7 +1043,22 @@ def _wait_for_reward_save(page, click, want_gmt):
             return "the page saved a different choice than expected"
         return None
     except PlaywrightTimeoutError:
-        return "GoMining never saved the change (no save request within 15s)"
+        return f"GoMining never saved the change (no save request within {timeout // 1000}s)"
+
+
+def _selected_miner_number(picker):
+    """The number of the miner shown as getting TH ("" if none can be read in a few seconds).
+
+    GoMining fills it in a moment after the pop-up opens; a live run once timed out reading
+    it straight away.
+    """
+    try:
+        chosen = picker.locator(".ng-value").first
+        chosen.wait_for(state="visible", timeout=8000)
+        m = re.search(r"#\s*(\d+)", chosen.inner_text(timeout=3000))
+        return m.group(1) if m else ""
+    except PlaywrightTimeoutError:
+        return ""
 
 
 def apply_reward_rotation(context, label):
@@ -1087,36 +1102,44 @@ def apply_reward_rotation(context, label):
             return
 
         picker = page.locator(MINER_PICKER)
-        if on_th:
+        saved_already = False
+        if not on_th:
+            # On some accounts GoMining remembers the last TH miner, so choosing TH saves
+            # straight away with that miner (seen live on one account; another needed a miner
+            # picked first). Catch that save if it happens; otherwise a miner is picked below.
+            step = "choosing TH"
+            saved_already = _wait_for_reward_save(
+                page, lambda: page.locator(f"label:has({REINVEST_RADIO.format('nft')})").click(),
+                want_gmt=False, timeout=5000) is None
+            if saved_already and not config["miner"]:
+                print(f"[{label}] reward rotation: {where} -- switched to TH (GoMining kept your last TH miner).")
+                return
+        if on_th or saved_already:
             if not config["miner"]:
                 print(f"[{label}] reward rotation: {where} -- already on TH.")
                 return
-            # GoMining fills in the selected miner a moment after the pop-up opens (a live run
-            # once timed out reading it straight away). If it still can't be read, just pick
-            # the configured miner again below: re-saving the same choice changes nothing.
-            step = "reading the miner currently getting TH"
-            chosen_text = ""
-            try:
-                chosen = picker.locator(".ng-value").first
-                chosen.wait_for(state="visible", timeout=8000)
-                chosen_text = chosen.inner_text(timeout=3000)
-            except PlaywrightTimeoutError:
-                pass
-            if re.search(rf"#\s*{config['miner']}\b", chosen_text):
-                print(f"[{label}] reward rotation: {where} -- already on TH.")
+            if _selected_miner_number(picker) == config["miner"]:
+                if saved_already:
+                    print(f"[{label}] reward rotation: {where} -- switched to TH on the miner you chose.")
+                else:
+                    print(f"[{label}] reward rotation: {where} -- already on TH.")
                 return
-        else:
-            step = "choosing TH"
-            page.locator(f"label:has({REINVEST_RADIO.format('nft')})").click()
+            # Wrong or unreadable miner: pick the configured one (re-saving the same choice
+            # changes nothing).
         step = "opening the miner list"
-        picker.locator("ng-select").first.click(timeout=10000)
         options = picker.locator(".ng-option")
+        for _ in range(2):  # a click can land while the list is still settling; try twice
+            picker.locator(".ng-select-container").first.click(timeout=10000)
+            try:
+                options.first.wait_for(state="visible", timeout=5000)
+                break
+            except PlaywrightTimeoutError:
+                continue
         step = "waiting for miners to appear in the list"
-        options.first.wait_for(state="visible", timeout=10000)
+        options.first.wait_for(state="visible", timeout=5000)
         step = "picking the miner"
         index, note = choose_miner_option(options.all_inner_texts(), config["miner"])
         if index is None:
-            # Nothing was saved yet (GoMining only saves once a miner is picked).
             report(label, f"reward rotation: could not switch to TH -- {note}.", level="warning")
             return
         error = _wait_for_reward_save(page, lambda: options.nth(index).click(), want_gmt=False)
