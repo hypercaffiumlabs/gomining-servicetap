@@ -1088,10 +1088,21 @@ def apply_reward_rotation(context, label):
 
         picker = page.locator(MINER_PICKER)
         if on_th:
+            if not config["miner"]:
+                print(f"[{label}] reward rotation: {where} -- already on TH.")
+                return
+            # GoMining fills in the selected miner a moment after the pop-up opens (a live run
+            # once timed out reading it straight away). If it still can't be read, just pick
+            # the configured miner again below: re-saving the same choice changes nothing.
             step = "reading the miner currently getting TH"
-            chosen = picker.locator(".ng-value")
-            chosen_text = chosen.first.inner_text(timeout=3000) if chosen.count() else ""
-            if not config["miner"] or re.search(rf"#\s*{config['miner']}\b", chosen_text):
+            chosen_text = ""
+            try:
+                chosen = picker.locator(".ng-value").first
+                chosen.wait_for(state="visible", timeout=8000)
+                chosen_text = chosen.inner_text(timeout=3000)
+            except PlaywrightTimeoutError:
+                pass
+            if re.search(rf"#\s*{config['miner']}\b", chosen_text):
                 print(f"[{label}] reward rotation: {where} -- already on TH.")
                 return
         else:
