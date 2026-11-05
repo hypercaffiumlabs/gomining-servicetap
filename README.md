@@ -4,7 +4,9 @@ Automatically taps GoMining's daily "maintenance" (service) button for one or
 more accounts, so your maintenance-discount streak never lapses — even if
 your computer is off. Runs on GitHub Actions (free tier is plenty). Also
 includes an optional weekly job that re-extends your veGOMINING lock(s) so
-their votes don't decay (see "Weekly lock re-extend" below).
+their votes don't decay (see "Weekly lock re-extend" below), and an optional
+switch that alternates your daily reward between TH and GOMINING (see
+"Reward rotation" below).
 
 ## How it works
 
@@ -217,6 +219,51 @@ Since this is a real financial action, not a routine click:
 - A position already at (or within about a week of) the max is left alone
   and counted OK — GoMining's own page drops the "Max" option at that
   point. A 0-GMT (closed) position is always skipped.
+
+## Optional: Reward rotation (TH and GOMINING)
+
+GoMining's reward setting (**Settings → Reinvestment** on the miners page)
+sends each day's reward either to **TH** on one of your miners or to
+**GOMINING** tokens in your wallet. ServiceTap can switch between the two
+for you on a repeating schedule, per account: for example 5 days TH, then
+5 days GOMINING, then TH again. The GOMINING days just leave the tokens in
+your wallet (handy for paying maintenance in GOMINING); nothing is locked,
+sold or moved.
+
+**Off by default.** To turn it on or change it, use the
+[settings page](https://hypercaffiumlabs.github.io/gomining-servicetap/settings.html)
+(sign in with GitHub, pick your copy, fill in the numbers, Save). The setup
+wizard also offers it for new setups. For each account you choose:
+
+- **TH days** and **GOMINING days**: how long each stretch lasts. Use 0
+  for "never" (so 5 and 0 means always TH). Clear both to turn it off.
+- **Miner that gets the TH** (optional): its number, e.g. `514961`.
+  Blank means your biggest miner in GoMining's list. GoMining only offers
+  some miners for this; if yours isn't offered, the biggest one is used and
+  you get a warning.
+- **Start with** TH or GOMINING, counted from the next payout.
+
+The switch happens in the same nightly runs as the service tap, before
+GoMining's morning payout, and only when the setting is wrong for that
+day, so it usually clicks once per stretch. Days are counted from a fixed
+start date, so a missed night can't shift the cycle. It drives GoMining's
+own Settings pop-up, so your other settings there (maintenance in
+GOMINING, pool) stay as they are. **Reinvestment must stay switched on**
+in GoMining; if it's off, the rotation leaves things alone and warns.
+
+A failed switch never fails the tap: it shows as a `reward rotation`
+line in the run log (and a Sentry warning, if you use Sentry), and the
+setting simply stays where it was until the next run.
+
+Prefer GitHub's own screens? The settings are plain repo **Variables**
+(Settings → Secrets and variables → Actions → **Variables** tab), one set
+per account label: `REWARD_TH_DAYS_<LABEL>`, `REWARD_GMT_DAYS_<LABEL>`,
+`REWARD_START_<LABEL>` (a date like `2026-11-05`, day 1 of a TH stretch)
+and `REWARD_TH_MINER_<LABEL>`. Variables aren't secret: on a public fork,
+anyone can see them in run logs, including the miner number.
+
+Forked before this existed? Click **Sync fork** first (see "Staying up to
+date"): the settings page tells you if your copy is too old.
 
 ## Staying up to date
 

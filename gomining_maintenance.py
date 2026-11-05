@@ -908,156 +908,205 @@ def extend_locks_for_account(context, label):
             lock_extend_failures.append((label, pid_short, f"{position['amount_gmt']:.2f} GMT"))
 
 
-# ---- TEMPORARY discovery probe: where does GoMining keep the reward (TH vs GMT) setting? ----
+
+# ---- Optional: alternate daily rewards between TH and GOMINING ----
 #
-# Started by hand only (workflow_dispatch input "probe_reward_settings"); a scheduled run never
-# sets it. Read-only: it opens pages and, at most, opens a reward-settings dialog, but never
-# presses save/confirm. Actions logs on this public repo are world-readable, so it logs NAMES
-# only -- API paths, JSON key names, and short button/heading texts with every digit removed --
-# never values, balances, ids, cookies or e-mail addresses. Delete once the setting is found.
-PROBE_REWARD_SETTINGS = os.environ.get("PROBE_REWARD_SETTINGS", "").strip().lower() == "true"
-PROBE_WORDS = re.compile(r"reinvest|reward|payout|auto|convert|currency|setting|preference|"
-                         r"compound|upgrade|\bTH\b|GMT|GOMINING|BTC|bitcoin|wallet", re.I)
-PROBE_CLICK_WORDS = re.compile(r"reinvest|reward setting|payout setting|reward mode|reward currency", re.I)
-PROBE_NEVER_CLICK = re.compile(r"save|confirm|apply|submit|buy|withdraw|deposit|send|swap|lock|delete", re.I)
-probe_done = []
+# GoMining's reward setting (Settings pop-up on the miners page -> Reinvestment) sends each
+# day's reward either to TH on one miner ("TH") or to GOMINING tokens in the wallet
+# ("GOMINING"). This rotates between the two on a repeating schedule per account: e.g. 5 days
+# TH, then 5 days GOMINING. Off unless the account has repo Variables set (the setup wizard and
+# settings page write them; the workflow passes all Variables in as GH_VARS):
+#
+#   REWARD_TH_DAYS_<LABEL>    days per cycle on TH       (0 = never TH)
+#   REWARD_GMT_DAYS_<LABEL>   days per cycle on GOMINING (0 = never GOMINING)
+#   REWARD_START_<LABEL>      YYYY-MM-DD, day 1 of a cycle (first TH day); default 2026-01-01
+#   REWARD_TH_MINER_<LABEL>   optional miner number, e.g. 514961; default = biggest listed miner
+#
+# The day is counted from the start date, never from "the last switch", so a missed night can't
+# shift the cycle. Payouts happen in the US morning, after the whole nightly window, so every
+# run of the night (including the 23:xx UTC one) works for the NEXT payout: the date used is the
+# UTC date one hour from now. Best-effort like the other extras: a problem is a Sentry warning,
+# never a failed tap. The page itself is driven (not the API) so the account's other settings
+# (maintenance in GOMINING, pool) are left exactly as they are.
+REWARD_SETTINGS_URL = DASHBOARD_URL + "?modal=reward-settings"
+REWARD_SAVE_PATH = "/api/user/change-incomes-settings"
+REWARD_DEFAULT_START = "2026-01-01"
+REWARD_MAX_DAYS = 365
+REINVEST_SWITCH = "input[name=rewards-settings-reinvestment-nft-power]"
+REINVEST_RADIO = "input[name=reinvestment][value={}]"  # "token" = GOMINING, "nft" = TH
+MINER_PICKER = "rewards-settings-reinvestment-nft-power"
 
 
-def _probe_text(text):
-    """A short, digit-free, single-line version of some page text, or None if it shouldn't be logged."""
-    words = " ".join((text or "").split())
-    if "@" in words or not PROBE_WORDS.search(words):
+def _repo_vars():
+    """The repo's Actions Variables (GH_VARS = toJSON(vars) in the workflow), or {}."""
+    try:
+        data = json.loads(os.environ.get("GH_VARS") or "{}")
+        return data if isinstance(data, dict) else {}
+    except ValueError:
+        return {}
+
+
+def reward_rotation_config(label, variables=None):
+    """This account's rotation settings, None when it's off, or ValueError with a plain reason.
+
+    Returns {"th_days", "gmt_days", "start" (date), "miner" (str of digits or None)}. A plain
+    environment variable of the same name wins over the repo Variable (handy for local runs).
+    """
+    variables = _repo_vars() if variables is None else variables
+    key = label.upper()
+
+    def get(name):
+        value = os.environ.get(f"{name}_{key}")
+        if value is None:
+            value = variables.get(f"{name}_{key}")
+        return str(value).strip() if value is not None else ""
+
+    th_raw, gmt_raw = get("REWARD_TH_DAYS"), get("REWARD_GMT_DAYS")
+    if not th_raw and not gmt_raw:
         return None
-    # Keep only plain dictionary-looking words: drops numbers, addresses, codes and ids
-    # (anything with a digit, or longer than a normal word).
-    kept = [w for w in words.split(" ") if re.fullmatch(r"[A-Za-z][A-Za-z'&/()-]{0,19}[.,:!?]?", w)]
-    text = " ".join(kept)[:60].strip(" .,:-")
-    return text or None
+    days = []
+    for name, raw in (("REWARD_TH_DAYS", th_raw), ("REWARD_GMT_DAYS", gmt_raw)):
+        raw = raw or "0"
+        if not re.fullmatch(r"\d{1,3}", raw) or int(raw) > REWARD_MAX_DAYS:
+            raise ValueError(f"{name}_{key} must be a whole number of days from 0 to {REWARD_MAX_DAYS}, not {raw!r}.")
+        days.append(int(raw))
+    if days == [0, 0]:
+        raise ValueError(f"REWARD_TH_DAYS_{key} and REWARD_GMT_DAYS_{key} can't both be 0 "
+                         "(clear both to turn the rotation off).")
+    start_raw = get("REWARD_START") or REWARD_DEFAULT_START
+    try:
+        start = datetime.strptime(start_raw, "%Y-%m-%d").date()
+    except ValueError:
+        raise ValueError(f"REWARD_START_{key} must be a date like 2026-11-05, not {start_raw!r}.") from None
+    miner_raw = get("REWARD_TH_MINER").lstrip("#").strip()
+    if miner_raw and not re.fullmatch(r"\d{1,12}", miner_raw):
+        raise ValueError(f"REWARD_TH_MINER_{key} must be a miner number like 514961, not {miner_raw!r}.")
+    return {"th_days": days[0], "gmt_days": days[1], "start": start, "miner": miner_raw or None}
 
 
-def _probe_key_names(node, out, prefix="", depth=0):
-    """Collect JSON key *paths* (never values), bounded."""
-    if depth > 4 or len(out) > 60:
+def reward_mode_for(day, th_days, gmt_days, start):
+    """("TH" or "GMT", day number within that stretch, length of that stretch) for `day`."""
+    if gmt_days == 0:
+        return "TH", 1, 1
+    if th_days == 0:
+        return "GMT", 1, 1
+    position = (day - start).days % (th_days + gmt_days)  # Python's % is never negative
+    if position < th_days:
+        return "TH", position + 1, th_days
+    return "GMT", position - th_days + 1, gmt_days
+
+
+def reward_day(now=None):
+    """The date whose payout tonight's runs are setting up (see the section comment)."""
+    now = now or datetime.now(timezone.utc)
+    return (now + timedelta(hours=1)).date()
+
+
+def choose_miner_option(option_texts, wanted=None):
+    """(index, note) of the miner to send TH to, from the picker's option texts, or (None, why).
+
+    `wanted` is a miner number ("514961"). Without one, or if it isn't offered, the option
+    with the most TH wins (the first one on a tie or when no TH figure can be read).
+    """
+    if not option_texts:
+        return None, "GoMining offered no miners to send TH to"
+    numbers = [re.search(r"#\s*(\d+)", t or "") for t in option_texts]
+    if wanted:
+        for i, m in enumerate(numbers):
+            if m and m.group(1) == wanted:
+                return i, "the miner you chose"
+
+    def th_of(text):
+        m = re.search(r"(\d+(?:[.,]\d+)?)\s*TH\b", text or "")
+        return float(m.group(1).replace(",", ".")) if m else -1.0
+
+    sizes = [th_of(t) for t in option_texts]
+    best = max(range(len(option_texts)), key=lambda i: (sizes[i], -i))
+    if wanted:
+        return best, f"the biggest listed miner (miner #{wanted} isn't in GoMining's list)"
+    return best, "the biggest listed miner"
+
+
+def _wait_for_reward_save(page, click, want_gmt):
+    """Run `click`, then confirm GoMining saved the expected choice. Returns an error or None."""
+    try:
+        with page.expect_response(
+            lambda r: urlsplit(r.url).path == REWARD_SAVE_PATH and r.request.method == "POST",
+            timeout=15000,
+        ) as info:
+            click()
+        response = info.value
+        sent = response.request.post_data_json or {}
+        if not response.ok or (response.json() or {}).get("data") is not True:
+            return f"GoMining didn't accept the change (HTTP {response.status})"
+        if sent.get("reinvestmentNftIncomeToGmt") is not want_gmt:
+            return "the page saved a different choice than expected"
+        return None
+    except PlaywrightTimeoutError:
+        return "GoMining never saved the change (no save request within 15s)"
+
+
+def apply_reward_rotation(context, label):
+    """Make the account's reward setting match today's place in its rotation. Never raises."""
+    try:
+        config = reward_rotation_config(label)
+    except ValueError as exc:
+        report(label, f"reward rotation skipped -- {exc}", level="warning")
         return
-    if isinstance(node, dict):
-        for key, value in node.items():
-            key = key if re.fullmatch(r"[A-Za-z_]{1,40}", str(key)) else "*"  # dynamic keys (ids, addresses)
-            name = f"{prefix}.{key}" if prefix else key
-            out.add(name)
-            _probe_key_names(value, out, name, depth + 1)
-    elif isinstance(node, list) and node:
-        _probe_key_names(node[0], out, prefix + "[]", depth + 1)
-
-
-def probe_reward_settings(context, label):
-    """Log where the reward-setting UI and API live (names only). Best-effort, never raises."""
-    probe_done.append(label)
-    seen = {}  # "METHOD /api/path" -> sorted key names (for matching paths) or None
-
-    def on_response(response):
-        try:
-            path = urlsplit(response.url).path
-            if not path.startswith("/api/") or len(seen) > 80:
-                return
-            entry = f"{response.request.method} {re.sub(r'[0-9a-f]{8,}|\d+', '#', path)}"
-            if entry in seen:
-                return
-            seen[entry] = None
-            if PROBE_WORDS.search(path) or re.search(r"user|miner|nft", path, re.I):
-                keys = set()
-                _probe_key_names(response.json(), keys)
-                seen[entry] = sorted(keys)[:60]
-        except Exception:
-            pass
-
-    def page_texts(page):
-        texts = set()
-        for selector in ("button", "a", "[role=tab]", "[role=switch]", "label", "h1", "h2", "h3",
-                         "mat-slide-toggle", "input[type=radio]", "[class*=reinvest]", "[class*=reward]"):
-            try:
-                for el in page.locator(selector).all()[:150]:
-                    t = _probe_text(el.inner_text(timeout=500))
-                    if t:
-                        texts.add(f"{selector}: {t}")
-            except Exception:
-                pass
-        return sorted(texts)[:60]
-
-    def links(page):
-        out = set()
-        try:
-            for href in page.eval_on_selector_all("a[href]", "els => els.map(e => e.getAttribute('href'))"):
-                if href and href.startswith("/") and "@" not in href:
-                    # Only plain lowercase route words survive; any other segment (ids,
-                    # referral codes, usernames) becomes "*".
-                    segments = href.split("?")[0].split("#")[0].strip("/").split("/")
-                    out.add("/" + "/".join(seg if re.fullmatch(r"[a-z][a-z-]{0,29}", seg) else "*"
-                                           for seg in segments))
-        except Exception:
-            pass
-        return sorted(out)[:80]
-
+    if not config:
+        return
+    want, n, length = reward_mode_for(reward_day(), config["th_days"], config["gmt_days"], config["start"])
+    want_name = "TH" if want == "TH" else "GOMINING"
+    where = f"day {n} of {length} on {want_name}" if config["th_days"] and config["gmt_days"] else f"always {want_name}"
     page = None
     try:
         page = context.new_page()
-        page.on("response", on_response)
-        visited = set()
-        queue = [DASHBOARD_URL]
-        first_links = []
-        while queue and len(visited) < 6:
-            url = queue.pop(0)
-            path = urlsplit(url).path
-            if path in visited:
-                continue
-            visited.add(path)
-            try:
-                page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                page.wait_for_timeout(6000)
-            except Exception as exc:
-                print(f"[{label}] probe: {path} did not load ({type(exc).__name__})")
-                continue
-            print(f"[{label}] probe: PAGE {path} -> landed on {re.sub(r'[0-9]+', '#', urlsplit(page.url).path)}")
-            for t in page_texts(page):
-                print(f"[{label}] probe:   text {t}")
-            page_links = links(page)
-            if not first_links:
-                first_links = page_links
-                print(f"[{label}] probe:   links {page_links}")
-                for href in page_links:
-                    if PROBE_WORDS.search(href) or re.search(r"profile|account|miner", href, re.I):
-                        if "*" not in href:
-                            queue.append("https://app.gomining.com" + href)
-            # Open (never confirm) anything that looks like the reward-setting control.
-            clicked = 0
-            for el in page.locator("button, [role=button], [role=switch], a, mat-slide-toggle").all()[:200]:
-                if clicked >= 2:
-                    break
-                try:
-                    raw = " ".join(el.inner_text(timeout=300).split())
-                except Exception:
-                    continue
-                if not PROBE_CLICK_WORDS.search(raw) or PROBE_NEVER_CLICK.search(raw):
-                    continue
-                if el.get_attribute("role") == "switch" or el.evaluate("e => e.tagName").lower() == "mat-slide-toggle":
-                    print(f"[{label}] probe:   (a switch '{_probe_text(raw)}' -- not touched)")
-                    continue
-                try:
-                    el.click(timeout=3000)
-                    clicked += 1
-                    page.wait_for_timeout(3000)
-                    print(f"[{label}] probe:   OPENED '{_probe_text(raw)}' -> now at "
-                          f"{re.sub(r'[0-9]+', '#', urlsplit(page.url).path)}")
-                    for t in page_texts(page):
-                        print(f"[{label}] probe:     text {t}")
-                    page.keyboard.press("Escape")
-                    page.wait_for_timeout(1000)
-                except Exception as exc:
-                    print(f"[{label}] probe:   could not open '{_probe_text(raw)}' ({type(exc).__name__})")
-        for entry in sorted(seen):
-            keys = seen[entry]
-            print(f"[{label}] probe: API {entry}" + (f" keys={keys}" if keys else ""))
+        page.goto(REWARD_SETTINGS_URL, wait_until="domcontentloaded", timeout=30000)
+        page.locator(REINVEST_SWITCH).wait_for(state="attached", timeout=30000)
+        page.wait_for_timeout(1500)  # let the saved settings load into the switch and radios
+        if not page.locator(REINVEST_SWITCH).is_checked():
+            report(label, "reward rotation skipped -- Reinvestment is switched off in GoMining's "
+                          "reward settings. Turn it on there to use the rotation.", level="warning")
+            return
+        page.locator(REINVEST_RADIO.format("token")).wait_for(state="attached", timeout=10000)
+        on_th = page.locator(REINVEST_RADIO.format("nft")).is_checked()
+
+        if want == "GMT":
+            if not on_th:
+                print(f"[{label}] reward rotation: {where} -- already on GOMINING.")
+                return
+            error = _wait_for_reward_save(
+                page, lambda: page.locator(f"label:has({REINVEST_RADIO.format('token')})").click(), want_gmt=True)
+            if error:
+                report(label, f"reward rotation: could not switch to GOMINING -- {error}.", level="warning")
+            else:
+                print(f"[{label}] reward rotation: {where} -- switched TH -> GOMINING.")
+            return
+
+        picker = page.locator(MINER_PICKER)
+        if on_th:
+            chosen = picker.locator(".ng-value")
+            chosen_text = chosen.first.inner_text(timeout=3000) if chosen.count() else ""
+            if not config["miner"] or re.search(rf"#\s*{config['miner']}\b", chosen_text):
+                print(f"[{label}] reward rotation: {where} -- already on TH.")
+                return
+        else:
+            page.locator(f"label:has({REINVEST_RADIO.format('nft')})").click()
+        picker.locator("ng-select").first.click(timeout=10000)
+        options = picker.locator(".ng-option")
+        options.first.wait_for(state="visible", timeout=10000)
+        index, note = choose_miner_option(options.all_inner_texts(), config["miner"])
+        if index is None:
+            # Nothing was saved yet (GoMining only saves once a miner is picked).
+            report(label, f"reward rotation: could not switch to TH -- {note}.", level="warning")
+            return
+        error = _wait_for_reward_save(page, lambda: options.nth(index).click(), want_gmt=False)
+        if error:
+            report(label, f"reward rotation: could not switch to TH -- {error}.", level="warning")
+        else:
+            print(f"[{label}] reward rotation: {where} -- switched to TH on {note}.")
     except Exception as exc:
-        print(f"[{label}] probe failed ({type(exc).__name__}); tap unaffected.")
+        report(label, f"reward rotation failed ({type(exc).__name__}); the tap is unaffected.", level="warning")
     finally:
         if page is not None:
             try:
@@ -1214,8 +1263,8 @@ def run_for_account(playwright, label, env_var, cookies_json):
                 read_lock_model_on_fresh_page(context, label)
             if RUN_LOCK_EXTEND:
                 extend_locks_for_account(context, label)
-            if PROBE_REWARD_SETTINGS and not probe_done:
-                probe_reward_settings(context, label)
+            else:
+                apply_reward_rotation(context, label)
             if COOKIE_STORE == "cache":
                 persist_cookies_to_cache(label, context)
             else:
