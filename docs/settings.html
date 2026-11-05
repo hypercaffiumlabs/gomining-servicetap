@@ -241,7 +241,7 @@ async function save() {
       line(`✓ ${a.label}: ${summary === "turned off" ? "Turned off." : summary}`, "ok");
     }
     if (!log.children.length) line("Nothing to change.");
-    else line("Saved. The next nightly run (from about 7:15pm US Eastern) applies it.");
+    else line("Saved. The next nightly run (from about 6:15pm US Eastern in winter, 7:15pm in summer) applies it.");
     await openRepo(repo.owner + "/" + repo.name); // show the saved state
   } catch (e) {
     line("✗ " + e.message, "err");

@@ -88,7 +88,7 @@ const RewardRotation = (() => {
           <label class="field rr-num"><span>GOMINING days</span>
             <input type="number" class="rr-gmt" min="0" max="${MAX_DAYS}" step="1" inputmode="numeric" value="${current ? esc(current.gmt) : ""}"></label>
         </div>
-        <label class="field"><span>Miner that gets the TH (optional, its number, e.g. 514961; blank = your biggest miner)</span>
+        <label class="field"><span>Miner that gets the TH (optional, its number, e.g. 123456; blank = your biggest miner)</span>
           <input type="text" class="rr-miner" inputmode="numeric" placeholder="biggest miner" value="${current ? esc(current.miner) : ""}"></label>
         <label class="field"><span>Start with</span>
           <select class="rr-start">${keep}
@@ -110,7 +110,7 @@ const RewardRotation = (() => {
     const out = { th: toDays(th), gmt: toDays(gmt), miner, startWith };
     if (Number.isNaN(out.th) || Number.isNaN(out.gmt)) throw new Error(`days must be whole numbers from 0 to ${MAX_DAYS}`);
     if (out.th === 0 && out.gmt === 0) throw new Error("TH days and GOMINING days can't both be 0 (clear both to turn it off)");
-    if (miner && !/^\d{1,12}$/.test(miner)) throw new Error("the miner should be just its number, like 514961");
+    if (miner && !/^\d{1,12}$/.test(miner)) throw new Error("the miner should be just its number, like 123456");
     return out;
   }
 

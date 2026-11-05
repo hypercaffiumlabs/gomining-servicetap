@@ -920,7 +920,7 @@ def extend_locks_for_account(context, label):
 #   REWARD_TH_DAYS_<LABEL>    days per cycle on TH       (0 = never TH)
 #   REWARD_GMT_DAYS_<LABEL>   days per cycle on GOMINING (0 = never GOMINING)
 #   REWARD_START_<LABEL>      YYYY-MM-DD, day 1 of a cycle (first TH day); default 2026-01-01
-#   REWARD_TH_MINER_<LABEL>   optional miner number, e.g. 514961; default = biggest listed miner
+#   REWARD_TH_MINER_<LABEL>   optional miner number, e.g. 123456; default = biggest listed miner
 #
 # The day is counted from the start date, never from "the last switch", so a missed night can't
 # shift the cycle. Payouts happen in the US morning, after the whole nightly window, so every
@@ -980,7 +980,7 @@ def reward_rotation_config(label, variables=None):
         raise ValueError(f"REWARD_START_{key} must be a date like 2026-11-05, not {start_raw!r}.") from None
     miner_raw = get("REWARD_TH_MINER").lstrip("#").strip()
     if miner_raw and not re.fullmatch(r"\d{1,12}", miner_raw):
-        raise ValueError(f"REWARD_TH_MINER_{key} must be a miner number like 514961, not {miner_raw!r}.")
+        raise ValueError(f"REWARD_TH_MINER_{key} must be a miner number like 123456, not {miner_raw!r}.")
     return {"th_days": days[0], "gmt_days": days[1], "start": start, "miner": miner_raw or None}
 
 
@@ -1005,7 +1005,7 @@ def reward_day(now=None):
 def choose_miner_option(option_texts, wanted=None):
     """(index, note) of the miner to send TH to, from the picker's option texts, or (None, why).
 
-    `wanted` is a miner number ("514961"). Without one, or if it isn't offered, the option
+    `wanted` is a miner number ("123456"). Without one, or if it isn't offered, the option
     with the most TH wins (the first one on a tie or when no TH figure can be read).
     """
     if not option_texts:

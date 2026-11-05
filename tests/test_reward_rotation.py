@@ -91,9 +91,9 @@ class RewardRotationConfig(unittest.TestCase):
     def test_full_config(self):
         cfg = gm.reward_rotation_config("main", {
             "REWARD_TH_DAYS_MAIN": "5", "REWARD_GMT_DAYS_MAIN": "5",
-            "REWARD_START_MAIN": "2026-11-05", "REWARD_TH_MINER_MAIN": "#514961",
+            "REWARD_START_MAIN": "2026-11-05", "REWARD_TH_MINER_MAIN": "#123456",
         })
-        self.assertEqual(cfg, {"th_days": 5, "gmt_days": 5, "start": date(2026, 11, 5), "miner": "514961"})
+        self.assertEqual(cfg, {"th_days": 5, "gmt_days": 5, "start": date(2026, 11, 5), "miner": "123456"})
 
     def test_one_side_blank_means_zero_and_default_start(self):
         cfg = gm.reward_rotation_config("MAIN", {"REWARD_GMT_DAYS_MAIN": "3"})
@@ -122,10 +122,10 @@ class RewardRotationConfig(unittest.TestCase):
 
 
 class ChooseMinerOption(unittest.TestCase):
-    options = ["The Mine Box #517691 1 TH 12 W/TH", "The Mine Box #514961 9 TH 12 W/TH", "Other #1 4.88 TH"]
+    options = ["The Mine Box #654321 1 TH 12 W/TH", "The Mine Box #123456 9 TH 12 W/TH", "Other #1 4.88 TH"]
 
     def test_picks_the_named_miner(self):
-        self.assertEqual(gm.choose_miner_option(self.options, "517691"), (0, "the miner you chose"))
+        self.assertEqual(gm.choose_miner_option(self.options, "654321"), (0, "the miner you chose"))
 
     def test_defaults_to_biggest(self):
         self.assertEqual(gm.choose_miner_option(self.options)[0], 1)

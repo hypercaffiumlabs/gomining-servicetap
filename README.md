@@ -237,7 +237,7 @@ wizard also offers it for new setups. For each account you choose:
 
 - **TH days** and **GOMINING days**: how long each stretch lasts. Use 0
   for "never" (so 5 and 0 means always TH). Clear both to turn it off.
-- **Miner that gets the TH** (optional): its number, e.g. `514961`.
+- **Miner that gets the TH** (optional): its number, e.g. `123456`.
   Blank means your biggest miner in GoMining's list. GoMining only offers
   some miners for this; if yours isn't offered, the biggest one is used and
   you get a warning.
