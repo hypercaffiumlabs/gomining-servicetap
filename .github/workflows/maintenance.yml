@@ -10,7 +10,12 @@ on:
     # shifts an hour earlier during EST/winter since GitHub's scheduler
     # doesn't follow DST).
     - cron: "15 23,0-5 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      probe_reward_settings:
+        description: "TEMPORARY: also log where GoMining's reward setting lives (names only)"
+        type: boolean
+        default: false
 
 # Never let two runs overlap. GoMining rotates the refresh token on every use,
 # so a second run starting from the same saved cookies (a manual dispatch during
@@ -138,6 +143,8 @@ jobs:
           # top of this job): quiet failures go to Sentry as warnings and
           # skip the cron check-in instead of reporting an error.
           TAP_QUIET: ${{ steps.mode.outputs.quiet }}
+          # TEMPORARY discovery probe, see probe_reward_settings() in the script.
+          PROBE_REWARD_SETTINGS: ${{ inputs.probe_reward_settings }}
           # Comma-separated account labels. For each label, add a matching
           # GOMINING_COOKIES_<LABEL> secret below (e.g. a third account
           # needs GOMINING_ACCOUNT_LABELS: PRIMARY,SECONDARY,THIRD plus a
