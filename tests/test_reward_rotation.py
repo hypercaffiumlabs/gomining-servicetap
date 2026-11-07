@@ -170,5 +170,42 @@ class ChooseMinerOption(unittest.TestCase):
         self.assertEqual(gm.choose_miner_option(["Miner A", "Miner B"])[0], 0)
 
 
+class RewardStateMatches(unittest.TestCase):
+    th = {"reinvest": True, "choice": "TH", "miner": "123456", "pool": "Antpool"}
+    gmt = {"reinvest": True, "choice": "GMT", "miner": "", "pool": "Antpool"}
+    btc = {"reinvest": False, "choice": None, "miner": "", "pool": "Antpool"}
+
+    def test_modes(self):
+        m = gm.reward_state_matches
+        self.assertTrue(m(self.th, "TH", "123456"))
+        self.assertTrue(m(self.th, "TH"))
+        self.assertFalse(m(self.th, "TH", "654321"))
+        self.assertTrue(m(self.gmt, "GMT"))
+        self.assertFalse(m(self.gmt, "TH"))
+        self.assertTrue(m(self.btc, "BTC"))
+        self.assertFalse(m(self.btc, "GMT"))
+        self.assertFalse(m(self.th, "BTC"))
+
+    def test_pool(self):
+        m = gm.reward_state_matches
+        self.assertTrue(m(self.gmt, "GMT", pool="antpool"))
+        self.assertFalse(m(self.gmt, "GMT", pool="SpiderPool"))
+        self.assertTrue(m(self.btc, None, pool="Antpool"))
+        self.assertFalse(m(self.btc, None, pool="SpiderPool"))
+
+
+class ChoosePoolOption(unittest.TestCase):
+    options = ["Antpool ≈ 0.00000043 BTC / 1 TH per day", "SpiderPool ≈ 0.00000043 BTC / 1 TH per day"]
+
+    def test_by_name(self):
+        self.assertEqual(gm.choose_pool_option(self.options, "spiderpool")[0], 1)
+        self.assertEqual(gm.choose_pool_option(self.options, "Antpool")[0], 0)
+
+    def test_missing(self):
+        index, note = gm.choose_pool_option(self.options, "F2Pool")
+        self.assertIsNone(index)
+        self.assertIn("Antpool, SpiderPool", note)
+
+
 if __name__ == "__main__":
     unittest.main()

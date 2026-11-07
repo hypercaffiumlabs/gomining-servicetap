@@ -1069,23 +1069,46 @@ def choose_miner_option(option_texts, wanted=None):
     return best, "the biggest listed miner"
 
 
-def _wait_for_reward_save(page, click, want_gmt, timeout=15000):
-    """Run `click`, then confirm GoMining saved the expected choice. Returns an error or None."""
+POOL_PICKER = "rewards-settings-pool ng-select#pools"
+REWARD_PASSES = 3     # open -> read -> correct -> re-check; GoMining sometimes needs a second go
+REWARD_SETTLE_MS = 2500
+
+
+def reward_state_matches(state, want, miner=None, pool=None):
+    """True when the pop-up's state (from _read_reward_state) already gives `want` (+ miner, pool)."""
+    if pool and (state.get("pool") or "").lower() != pool.lower():
+        return False
+    if want is None:
+        return True
+    if want == "BTC":
+        return state.get("reinvest") is False
+    if not state.get("reinvest"):
+        return False
+    if want == "GMT":
+        return state.get("choice") == "GMT"
+    return state.get("choice") == "TH" and (not miner or state.get("miner") == miner)
+
+
+def _read_reward_state(page):
+    """{"reinvest": bool, "choice": "TH"/"GMT"/None, "miner": digits or "", "pool": name or ""}.
+
+    While Reinvestment is off GoMining doesn't render the TH/GOMINING choices at all.
+    """
+    page.locator(REINVEST_SWITCH).wait_for(state="attached", timeout=30000)
+    page.wait_for_timeout(REWARD_SETTLE_MS)  # let the saved settings load into the controls
+    state = {"reinvest": page.locator(REINVEST_SWITCH).is_checked(), "choice": None, "miner": "", "pool": ""}
     try:
-        with page.expect_response(
-            lambda r: urlsplit(r.url).path == REWARD_SAVE_PATH and r.request.method == "POST",
-            timeout=timeout,
-        ) as info:
-            click()
-        response = info.value
-        sent = response.request.post_data_json or {}
-        if not response.ok or (response.json() or {}).get("data") is not True:
-            return f"GoMining didn't accept the change (HTTP {response.status})"
-        if sent.get("reinvestmentNftIncomeToGmt") is not want_gmt:
-            return "the page saved a different choice than expected"
-        return None
+        state["pool"] = page.locator(f"{POOL_PICKER} .ng-value").first.inner_text(timeout=5000).strip()
     except PlaywrightTimeoutError:
-        return f"GoMining never saved the change (no save request within {timeout // 1000}s)"
+        pass
+    if state["reinvest"]:
+        page.locator(REINVEST_RADIO.format("token")).wait_for(state="attached", timeout=10000)
+        if page.locator(REINVEST_RADIO.format("nft")).is_checked():
+            state["choice"] = "TH"
+            state["miner"] = _selected_miner_number(page.locator(MINER_PICKER))
+        elif page.locator(REINVEST_RADIO.format("token")).is_checked():
+            state["choice"] = "GMT"
+    return state
 
 
 def _selected_miner_number(picker):
@@ -1103,94 +1126,128 @@ def _selected_miner_number(picker):
         return ""
 
 
+def _pick_from_dropdown(page, picker_selector, choose):
+    """Open an ng-select and click the option `choose(option_texts)` returns (index, note).
+
+    Returns the note, or raises LookupError with the note when nothing suitable is offered.
+    """
+    options = page.locator(f"{picker_selector} .ng-option")
+    for _ in range(2):  # a click can land while the list is still settling; try twice
+        page.locator(f"{picker_selector} .ng-select-container").first.click(timeout=10000)
+        try:
+            options.first.wait_for(state="visible", timeout=5000)
+            break
+        except PlaywrightTimeoutError:
+            continue
+    options.first.wait_for(state="visible", timeout=5000)
+    index, note = choose(options.all_inner_texts())
+    if index is None:
+        page.keyboard.press("Escape")
+        raise LookupError(note)
+    options.nth(index).click()
+    page.wait_for_timeout(REWARD_SETTLE_MS)
+    return note
+
+
+def choose_pool_option(option_texts, wanted):
+    """(index, note) of the pool named `wanted` (case-insensitive, by its leading name), or (None, why)."""
+    for i, text in enumerate(option_texts):
+        name = (text or "").strip().split()[0] if (text or "").strip() else ""
+        if name.lower() == wanted.lower():
+            return i, wanted
+    offered = ", ".join((t or "").strip().split()[0] for t in option_texts if (t or "").strip())
+    return None, f"GoMining doesn't offer a pool called {wanted!r} (it offers: {offered or 'none'})"
+
+
+def _correct_reward_state(page, state, want, config):
+    """Make one round of changes towards `want`. Returns plain notes on what was changed."""
+    notes = []
+    click = lambda selector: (page.locator(selector).first.click(timeout=10000), page.wait_for_timeout(REWARD_SETTLE_MS))
+    switch = f"label:has({REINVEST_SWITCH})"
+    th_label = f"label:has({REINVEST_RADIO.format('nft')})"
+    gmt_label = f"label:has({REINVEST_RADIO.format('token')})"
+
+    if config["pool"] and state["pool"].lower() != config["pool"].lower():
+        _pick_from_dropdown(page, POOL_PICKER, lambda texts: choose_pool_option(texts, config["pool"]))
+        notes.append(f"pool -> {config['pool']}")
+    if want is None:
+        return notes
+    if want == "BTC":
+        if state["reinvest"]:
+            click(switch)
+            notes.append("Reinvestment off (BTC)")
+        return notes
+    if not state["reinvest"]:
+        # Turning Reinvestment back on can leave GoMining half-set (seen live: "no miner, not
+        # GOMINING" while the page shows GOMINING), so always follow it with an explicit choice.
+        click(switch)
+        page.locator(REINVEST_RADIO.format("token")).wait_for(state="attached", timeout=10000)
+        click(th_label)
+        notes.append("Reinvestment on")
+        state = {"reinvest": True, "choice": "TH" if page.locator(REINVEST_RADIO.format("nft")).is_checked() else "GMT",
+                 "miner": "", "pool": state["pool"]}
+    if want == "GMT":
+        if state["choice"] != "GMT" or "Reinvestment on" in notes:
+            click(gmt_label)
+            notes.append("GOMINING")
+        return notes
+    if state["choice"] != "TH":
+        click(th_label)
+    if not page.locator(REINVEST_RADIO.format("nft")).is_checked():
+        return notes + ["TH didn't stick yet"]
+    current_miner = _selected_miner_number(page.locator(MINER_PICKER))
+    if not current_miner or (config["miner"] and current_miner != config["miner"]):
+        note = _pick_from_dropdown(page, MINER_PICKER, lambda texts: choose_miner_option(texts, config["miner"]))
+        notes.append(f"TH on {note}")
+    else:
+        notes.append("TH")
+    return notes
+
+
 def apply_reward_rotation(context, label):
-    """Make the account's reward setting match today's place in its rotation. Never raises."""
+    """Make the account's reward destination and pool match its plan for today. Never raises.
+
+    Each pass opens the Settings pop-up fresh, reads what GoMining actually has saved, and makes
+    one round of corrections; the next pass checks the result. GoMining's own save requests
+    weren't a reliable signal (some choices save twice, some show before they save), so a fresh
+    read is the only thing trusted.
+    """
     try:
         config = reward_rotation_config(label)
     except ValueError as exc:
-        report(label, f"reward rotation skipped -- {exc}", level="warning")
+        report(label, f"reward settings skipped -- {exc}", level="warning")
         return
     if not config:
         return
-    want, n, length = reward_mode_for(reward_day(), config["plan"], config["start"])
-    want_name = "TH" if want == "TH" else "GOMINING"
-    where = f"day {n} of {length} on {want_name}" if config["th_days"] and config["gmt_days"] else f"always {want_name}"
+    want, where = None, "pool only"
+    if config["plan"]:
+        want, n, length = reward_mode_for(reward_day(), config["plan"], config["start"])
+        name = REWARD_MODE_NAMES[want]
+        where = f"always {name}" if len(config["plan"]) == 1 else f"day {n} of {length} on {name}"
     page = None
-    step = "opening the Settings pop-up"  # named in the warning if anything below times out
+    step = "opening the Settings pop-up"
+    changes = []
     try:
         page = context.new_page()
-        page.goto(REWARD_SETTINGS_URL, wait_until="domcontentloaded", timeout=30000)
-        step = "waiting for the Reinvestment switch"
-        page.locator(REINVEST_SWITCH).wait_for(state="attached", timeout=30000)
-        page.wait_for_timeout(1500)  # let the saved settings load into the switch and radios
-        if not page.locator(REINVEST_SWITCH).is_checked():
-            report(label, "reward rotation skipped -- Reinvestment is switched off in GoMining's "
-                          "reward settings. Turn it on there to use the rotation.", level="warning")
-            return
-        step = "waiting for the GOMINING / TH choices"
-        page.locator(REINVEST_RADIO.format("token")).wait_for(state="attached", timeout=10000)
-        on_th = page.locator(REINVEST_RADIO.format("nft")).is_checked()
-
-        if want == "GMT":
-            if not on_th:
-                print(f"[{label}] reward rotation: {where} -- already on GOMINING.")
+        for attempt in range(1, REWARD_PASSES + 1):
+            step = "opening the Settings pop-up"
+            page.goto(REWARD_SETTINGS_URL, wait_until="domcontentloaded", timeout=30000)
+            step = "reading the current settings"
+            state = _read_reward_state(page)
+            if reward_state_matches(state, want, config["miner"], config["pool"]):
+                done = f"changed: {', '.join(changes)}" if changes else "already set"
+                print(f"[{label}] reward settings: {where} -- {done}.")
                 return
-            error = _wait_for_reward_save(
-                page, lambda: page.locator(f"label:has({REINVEST_RADIO.format('token')})").click(), want_gmt=True)
-            if error:
-                report(label, f"reward rotation: could not switch to GOMINING -- {error}.", level="warning")
-            else:
-                print(f"[{label}] reward rotation: {where} -- switched TH -> GOMINING.")
-            return
-
-        picker = page.locator(MINER_PICKER)
-        saved_already = False
-        if not on_th:
-            # On some accounts GoMining remembers the last TH miner, so choosing TH saves
-            # straight away with that miner (seen live on one account; another needed a miner
-            # picked first). Catch that save if it happens; otherwise a miner is picked below.
-            step = "choosing TH"
-            saved_already = _wait_for_reward_save(
-                page, lambda: page.locator(f"label:has({REINVEST_RADIO.format('nft')})").click(),
-                want_gmt=False, timeout=5000) is None
-            if saved_already and not config["miner"]:
-                print(f"[{label}] reward rotation: {where} -- switched to TH (GoMining kept your last TH miner).")
-                return
-        if on_th or saved_already:
-            if not config["miner"]:
-                print(f"[{label}] reward rotation: {where} -- already on TH.")
-                return
-            if _selected_miner_number(picker) == config["miner"]:
-                if saved_already:
-                    print(f"[{label}] reward rotation: {where} -- switched to TH on the miner you chose.")
-                else:
-                    print(f"[{label}] reward rotation: {where} -- already on TH.")
-                return
-            # Wrong or unreadable miner: pick the configured one (re-saving the same choice
-            # changes nothing).
-        step = "opening the miner list"
-        options = picker.locator(".ng-option")
-        for _ in range(2):  # a click can land while the list is still settling; try twice
-            picker.locator(".ng-select-container").first.click(timeout=10000)
-            try:
-                options.first.wait_for(state="visible", timeout=5000)
+            if attempt == REWARD_PASSES:
                 break
-            except PlaywrightTimeoutError:
-                continue
-        step = "waiting for miners to appear in the list"
-        options.first.wait_for(state="visible", timeout=5000)
-        step = "picking the miner"
-        index, note = choose_miner_option(options.all_inner_texts(), config["miner"])
-        if index is None:
-            report(label, f"reward rotation: could not switch to TH -- {note}.", level="warning")
-            return
-        error = _wait_for_reward_save(page, lambda: options.nth(index).click(), want_gmt=False)
-        if error:
-            report(label, f"reward rotation: could not switch to TH -- {error}.", level="warning")
-        else:
-            print(f"[{label}] reward rotation: {where} -- switched to TH on {note}.")
+            step = "changing the settings"
+            changes += _correct_reward_state(page, state, want, config)
+        report(label, f"reward settings: {where} -- GoMining still doesn't show the wanted setting after "
+                      f"{REWARD_PASSES - 1} tries (changed: {', '.join(changes) or 'nothing'}).", level="warning")
+    except LookupError as exc:
+        report(label, f"reward settings: {where} -- {exc}.", level="warning")
     except Exception as exc:
-        report(label, f"reward rotation failed while {step} ({type(exc).__name__}); the tap is unaffected.",
+        report(label, f"reward settings failed while {step} ({type(exc).__name__}); the tap is unaffected.",
                level="warning")
     finally:
         if page is not None:

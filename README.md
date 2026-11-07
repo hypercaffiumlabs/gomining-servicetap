@@ -220,49 +220,50 @@ Since this is a real financial action, not a routine click:
   and counted OK — GoMining's own page drops the "Max" option at that
   point. A 0-GMT (closed) position is always skipped.
 
-## Optional: Reward rotation (TH and GOMINING)
+## Optional: Daily reward destination (TH, GOMINING or BTC) and pool
 
-GoMining's reward setting (**Settings → Reinvestment** on the miners page)
-sends each day's reward either to **TH** on one of your miners or to
-**GOMINING** tokens in your wallet. ServiceTap can switch between the two
-for you on a repeating schedule, per account: for example 5 days TH, then
-5 days GOMINING, then TH again. The GOMINING days just leave the tokens in
-your wallet (handy for paying maintenance in GOMINING); nothing is locked,
-sold or moved.
+GoMining's Settings pop-up on the miners page decides where each day's
+reward goes: **TH** on one of your miners, **GOMINING** tokens in your
+wallet, or plain **BTC** (Reinvestment switched off). It also chooses your
+mining pool. ServiceTap can manage both for you, per account:
+
+- **Keep one choice** until you change it, e.g. always GOMINING.
+- **Alternate between two or three**, in the order you choose, e.g. 5 days
+  TH, then 5 days GOMINING, then 3 days BTC, repeating.
+- **Keep your pool set**, e.g. Antpool or SpiderPool, or leave it alone.
 
 **Off by default.** To turn it on or change it, use the
 [settings page](https://hypercaffiumlabs.github.io/gomining-servicetap/settings.html)
-(sign in with GitHub, pick your copy, fill in the numbers, Save). The setup
-wizard also offers it for new setups. For each account you choose:
+(sign in with GitHub, pick your copy, choose, Save). The setup wizard also
+offers it for new setups. For TH you can name the **miner that gets the
+TH** by its number (e.g. `123456`); blank means your biggest miner in
+GoMining's list. **Miners on GoMining's monthly TH subscription can't
+receive reinvested TH**, so GoMining leaves them out of the list; if the
+miner you named isn't offered, the biggest one in the list is used and you
+get a warning.
 
-- **TH days** and **GOMINING days**: how long each stretch lasts. Use 0
-  for "never" (so 5 and 0 means always TH). Clear both to turn it off.
-- **Miner that gets the TH** (optional): its number, e.g. `123456`.
-  Blank means your biggest miner in GoMining's list. **Miners on GoMining's
-  monthly TH subscription can't receive reinvested TH**, so GoMining leaves
-  them out of the list; pick one that isn't on a subscription. If the miner
-  you named isn't offered, the biggest one in the list is used and you get
-  a warning.
-- **Start with** TH or GOMINING, counted from the next payout.
+Changes happen in the same nightly runs as the service tap, before
+GoMining's morning payout, and only when something is wrong for that day.
+Days are counted from a fixed start date, so a missed night can't shift
+the cycle. ServiceTap drives GoMining's own Settings pop-up, then reopens
+it to check what GoMining actually saved (and tries again if needed), so
+your other settings there (maintenance in GOMINING, reward protection)
+stay as they are. For BTC days it switches Reinvestment **off**; for TH or
+GOMINING days it switches it back **on** and sets the choice explicitly.
 
-The switch happens in the same nightly runs as the service tap, before
-GoMining's morning payout, and only when the setting is wrong for that
-day, so it usually clicks once per stretch. Days are counted from a fixed
-start date, so a missed night can't shift the cycle. It drives GoMining's
-own Settings pop-up, so your other settings there (maintenance in
-GOMINING, pool) stay as they are. **Reinvestment must stay switched on**
-in GoMining; if it's off, the rotation leaves things alone and warns.
-
-A failed switch never fails the tap: it shows as a `reward rotation`
-line in the run log (and a Sentry warning, if you use Sentry), and the
-setting simply stays where it was until the next run.
+A failed change never fails the tap: it shows as a `reward settings` line
+in the run log (and a Sentry warning, if you use Sentry), and the setting
+stays where it was until the next run.
 
 Prefer GitHub's own screens? The settings are plain repo **Variables**
 (Settings → Secrets and variables → Actions → **Variables** tab), one set
-per account label: `REWARD_TH_DAYS_<LABEL>`, `REWARD_GMT_DAYS_<LABEL>`,
-`REWARD_START_<LABEL>` (a date like `2026-11-05`, day 1 of a TH stretch)
-and `REWARD_TH_MINER_<LABEL>`. Variables aren't secret: on a public fork,
-anyone can see them in run logs, including the miner number.
+per account label: `REWARD_PLAN_<LABEL>` (`GMT` to keep one, or
+`TH:5,GMT:5,BTC:3` to alternate in that order), `REWARD_START_<LABEL>` (a
+date like `2026-11-05`, day 1 of the first choice), `REWARD_TH_MINER_<LABEL>`
+and `REWARD_POOL_<LABEL>`. Variables aren't secret: on a public fork,
+anyone can see them in run logs, including the miner number. Settings
+saved by v15/v16 (`REWARD_TH_DAYS_`/`REWARD_GMT_DAYS_`) keep working and
+are converted the next time you save on the settings page.
 
 Forked before this existed? Click **Sync fork** first (see "Staying up to
 date"): the settings page tells you if your copy is too old.
@@ -355,7 +356,7 @@ lock, or the reward setting. Automating the daily tap also appears to be a
 fairly common, openly discussed practice
 ([example browser extension](https://gist.github.com/magicdude4eva/11a9b24e2066a5f0198c6df241d5059f)).
 
-On the optional reward rotation:
+On the optional reward settings:
 
 - The terms don't limit how often you change where rewards go. The closest
   rule (8.2.16, for Simple Earn) lets you switch reward format or target
@@ -363,8 +364,9 @@ On the optional reward rotation:
   same as clicking it yourself.
 - Enabling reinvestment on a miner with an active TH subscription is
   prohibited (13.15). ServiceTap only picks from the miners GoMining itself
-  offers, which leaves subscription miners out, and it never turns the
-  Reinvestment switch on or off.
+  offers, which leaves subscription miners out. The Reinvestment switch is
+  account-wide; ServiceTap only turns it off for BTC days and back on for
+  TH or GOMINING days, as you would by hand.
 
 Two things to keep in mind:
 
