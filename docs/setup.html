@@ -127,7 +127,7 @@
   <section class="panel" id="panel-done" hidden>
     <h2>🎉 You're set up</h2>
     <p id="done-summary"></p>
-    <p>To change the TH / GOMINING reward rotation later, or turn it on, use the <a href="settings.html">settings page</a>.</p>
+    <p>To choose where daily rewards go (TH, GOMINING or BTC, fixed or alternating) or your pool, now or later, use the <a href="settings.html">settings page</a>.</p>
     <p class="warn">Optional next step: Sentry error monitoring, covered in your new repo's README ("Optional: Sentry error monitoring") — catches the rare case where the schedule itself fails to fire, which GitHub's own emails can't.</p>
   </section>
 
@@ -391,8 +391,8 @@ function addAccountBlock(defaultLabel, opts = {}) {
     </div>
     <p class="paste-note" hidden></p>
     ${fixed ? "" : `<details class="rr">
-      <summary>Optional: alternate daily rewards between TH and GOMINING</summary>
-      <p class="dim" style="margin-top:8px;">Each day, GoMining sends your reward either to TH on one miner or to GOMINING tokens in your wallet (Settings → Reinvestment). Fill in both boxes to switch between them automatically, e.g. 5 days TH, then 5 days GOMINING, repeating. Use 0 for "never". Leave both blank to keep it off. You can change this any time on the <a href="settings.html" target="_blank" rel="noopener">settings page</a>.</p>
+      <summary>Optional: choose where daily rewards go (TH, GOMINING or BTC) and your pool</summary>
+      <p class="dim" style="margin-top:8px;">Each day, GoMining sends your reward to TH on one miner, to GOMINING tokens in your wallet, or as BTC (Settings → Reinvestment). ServiceTap can keep one of these for you, or alternate between two or three on a schedule, e.g. 5 days TH, then 5 days GOMINING. It can also keep your mining pool set. Leave it on "Leave it as I set it in GoMining" to keep it off. You can change this any time on the <a href="settings.html" target="_blank" rel="noopener">settings page</a>.</p>
       ${RewardRotation.fieldsHtml(null)}
     </details>`}
   `;
@@ -641,7 +641,7 @@ async function runConfigure() {
     let rotation = null;
     if (!repairMode) {
       try { rotation = RewardRotation.readFields(b); }
-      catch (e) { fatal(`Account "${label}", reward rotation: ${e.message}.`); return; }
+      catch (e) { fatal(`Account "${label}", reward settings: ${e.message}.`); return; }
     }
     accounts.push({ label, cookiesJson: JSON.stringify(parsed), rotation });
   }
@@ -684,8 +684,8 @@ async function runConfigure() {
       await rewriteWorkflowEnv(ghLogin, REPO_NAME, accounts);
       logLine("✓ Workflow file updated.", "ok");
 
-      for (const a of accounts.filter((x) => x.rotation)) {
-        logLine(`Saving the reward rotation for ${a.label}…`);
+      for (const a of accounts.filter((x) => x.rotation && (x.rotation.plan || x.rotation.pool))) {
+        logLine(`Saving the reward settings for ${a.label}…`);
         const summary = await RewardRotation.save(gh, ghLogin, REPO_NAME, a.label, a.rotation, null);
         logLine(`✓ ${a.label}: ${summary}`, "ok");
       }

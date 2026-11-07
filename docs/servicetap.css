@@ -92,3 +92,4 @@ input[type=number], select {
   width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--border);
   border-radius: 8px; padding: 9px 11px; font: inherit; font-size: 0.95rem;
 }
+[hidden] { display: none !important; }

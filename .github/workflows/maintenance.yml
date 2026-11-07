@@ -138,8 +138,8 @@ jobs:
           # top of this job): quiet failures go to Sentry as warnings and
           # skip the cron check-in instead of reporting an error.
           TAP_QUIET: ${{ steps.mode.outputs.quiet }}
-          # Optional reward rotation (TH vs GOMINING) settings live in the repo's
-          # Actions Variables (REWARD_TH_DAYS_<LABEL> and friends, written by the
+          # Optional reward settings (TH / GOMINING / BTC plan and pool) live in the
+          # repo's Actions Variables (REWARD_PLAN_<LABEL> and friends, written by the
           # setup wizard / settings page). All Variables are passed in at once so
           # any account label works without editing this file. None set = off.
           GH_VARS: ${{ toJSON(vars) }}

@@ -909,29 +909,35 @@ def extend_locks_for_account(context, label):
 
 
 
-# ---- Optional: alternate daily rewards between TH and GOMINING ----
+# ---- Optional: reward plan (TH / GOMINING / BTC, alternating or fixed) and pool ----
 #
-# GoMining's reward setting (Settings pop-up on the miners page -> Reinvestment) sends each
-# day's reward either to TH on one miner ("TH") or to GOMINING tokens in the wallet
-# ("GOMINING"). This rotates between the two on a repeating schedule per account: e.g. 5 days
-# TH, then 5 days GOMINING. Off unless the account has repo Variables set (the setup wizard and
-# settings page write them; the workflow passes all Variables in as GH_VARS):
+# GoMining's reward setting (Settings pop-up on the miners page) sends each day's reward to one
+# of three places: TH on one miner ("TH"), GOMINING tokens in the wallet ("GMT"), or plain BTC
+# (Reinvestment switched off, "BTC"). The pop-up also chooses the mining pool. Per account, this
+# keeps one choice indefinitely or alternates between up to three on a repeating schedule
+# (e.g. 5 days TH, 5 days GOMINING, 3 days BTC), and can hold the pool at a chosen value. Off
+# unless the account has repo Variables (written by the settings page and the setup wizard; the
+# workflow passes all Variables in as GH_VARS):
 #
-#   REWARD_TH_DAYS_<LABEL>    days per cycle on TH       (0 = never TH)
-#   REWARD_GMT_DAYS_<LABEL>   days per cycle on GOMINING (0 = never GOMINING)
-#   REWARD_START_<LABEL>      YYYY-MM-DD, day 1 of a cycle (first TH day); default 2026-01-01
+#   REWARD_PLAN_<LABEL>       "GMT" (keep one) or "TH:5,GMT:5,BTC:3" (alternate, in that order)
+#   REWARD_START_<LABEL>      YYYY-MM-DD, day 1 of the plan's first stretch; default 2026-01-01
 #   REWARD_TH_MINER_<LABEL>   optional miner number, e.g. 123456; default = biggest listed miner
+#   REWARD_POOL_<LABEL>       optional pool name as GoMining shows it, e.g. "Antpool"
+#
+# v15/v16's REWARD_TH_DAYS_<LABEL> / REWARD_GMT_DAYS_<LABEL> are still read when there's no plan.
 #
 # The day is counted from the start date, never from "the last switch", so a missed night can't
 # shift the cycle. Payouts happen in the US morning, after the whole nightly window, so every
 # run of the night (including the 23:xx UTC one) works for the NEXT payout: the date used is the
 # UTC date one hour from now. Best-effort like the other extras: a problem is a Sentry warning,
 # never a failed tap. The page itself is driven (not the API) so the account's other settings
-# (maintenance in GOMINING, pool) are left exactly as they are.
+# (maintenance in GOMINING, reward protection) are left exactly as they are.
 REWARD_SETTINGS_URL = DASHBOARD_URL + "?modal=reward-settings"
 REWARD_SAVE_PATH = "/api/user/change-incomes-settings"
 REWARD_DEFAULT_START = "2026-01-01"
 REWARD_MAX_DAYS = 365
+REWARD_MODES = ("TH", "GMT", "BTC")
+REWARD_MODE_NAMES = {"TH": "TH", "GMT": "GOMINING", "BTC": "BTC"}
 REINVEST_SWITCH = "input[name=rewards-settings-reinvestment-nft-power]"
 REINVEST_RADIO = "input[name=reinvestment][value={}]"  # "token" = GOMINING, "nft" = TH
 MINER_PICKER = "rewards-settings-reinvestment-nft-power"
@@ -946,11 +952,35 @@ def _repo_vars():
         return {}
 
 
-def reward_rotation_config(label, variables=None):
-    """This account's rotation settings, None when it's off, or ValueError with a plain reason.
+def parse_reward_plan(raw, key="LABEL"):
+    """[(mode, days), ...] from "GMT" or "TH:5,GMT:5,BTC:3"; ValueError with a plain reason.
 
-    Returns {"th_days", "gmt_days", "start" (date), "miner" (str of digits or None)}. A plain
-    environment variable of the same name wins over the repo Variable (handy for local runs).
+    One entry = keep that choice (its days don't matter). Two or three entries alternate in the
+    order given; each mode at most once.
+    """
+    parts = [p.strip().upper() for p in raw.split(",") if p.strip()]
+    if not 1 <= len(parts) <= 3:
+        raise ValueError(f"REWARD_PLAN_{key} needs one to three choices, like GMT or TH:5,GMT:5.")
+    plan = []
+    for part in parts:
+        m = re.fullmatch(r"(TH|GMT|BTC)(?::(\d{1,3}))?", part)
+        if not m:
+            raise ValueError(f"REWARD_PLAN_{key}: {part!r} isn't TH, GMT or BTC with a number of days (like GMT:5).")
+        days = int(m.group(2)) if m.group(2) else (1 if len(parts) == 1 else 0)
+        if not 1 <= days <= REWARD_MAX_DAYS:
+            raise ValueError(f"REWARD_PLAN_{key}: {part!r} needs a number of days from 1 to {REWARD_MAX_DAYS}.")
+        plan.append((m.group(1), days))
+    if len({mode for mode, _ in plan}) != len(plan):
+        raise ValueError(f"REWARD_PLAN_{key} lists the same choice twice.")
+    return plan
+
+
+def reward_rotation_config(label, variables=None):
+    """This account's reward settings, None when none are set, or ValueError with a plain reason.
+
+    Returns {"plan": [(mode, days)...] (may be empty: pool only), "start" (date),
+    "miner" (digits or None), "pool" (str or None)}. A plain environment variable of the same
+    name wins over the repo Variable (handy for local runs).
     """
     variables = _repo_vars() if variables is None else variables
     key = label.upper()
@@ -961,18 +991,27 @@ def reward_rotation_config(label, variables=None):
             value = variables.get(f"{name}_{key}")
         return str(value).strip() if value is not None else ""
 
+    plan_raw, pool = get("REWARD_PLAN"), get("REWARD_POOL")
     th_raw, gmt_raw = get("REWARD_TH_DAYS"), get("REWARD_GMT_DAYS")
-    if not th_raw and not gmt_raw:
+    if plan_raw:
+        plan = parse_reward_plan(plan_raw, key)
+    elif th_raw or gmt_raw:  # the v15/v16 format
+        days = []
+        for name, raw in (("REWARD_TH_DAYS", th_raw), ("REWARD_GMT_DAYS", gmt_raw)):
+            raw = raw or "0"
+            if not re.fullmatch(r"\d{1,3}", raw) or int(raw) > REWARD_MAX_DAYS:
+                raise ValueError(f"{name}_{key} must be a whole number of days from 0 to {REWARD_MAX_DAYS}, not {raw!r}.")
+            days.append(int(raw))
+        if days == [0, 0]:
+            raise ValueError(f"REWARD_TH_DAYS_{key} and REWARD_GMT_DAYS_{key} can't both be 0 "
+                             "(clear both to turn the rotation off).")
+        plan = [(mode, d) for mode, d in zip(("TH", "GMT"), days) if d]
+    else:
+        plan = []
+    if not plan and not pool:
         return None
-    days = []
-    for name, raw in (("REWARD_TH_DAYS", th_raw), ("REWARD_GMT_DAYS", gmt_raw)):
-        raw = raw or "0"
-        if not re.fullmatch(r"\d{1,3}", raw) or int(raw) > REWARD_MAX_DAYS:
-            raise ValueError(f"{name}_{key} must be a whole number of days from 0 to {REWARD_MAX_DAYS}, not {raw!r}.")
-        days.append(int(raw))
-    if days == [0, 0]:
-        raise ValueError(f"REWARD_TH_DAYS_{key} and REWARD_GMT_DAYS_{key} can't both be 0 "
-                         "(clear both to turn the rotation off).")
+    if len(pool) > 40 or (pool and not re.fullmatch(r"[A-Za-z0-9 ()._-]+", pool)):
+        raise ValueError(f"REWARD_POOL_{key} should be a pool name as GoMining shows it, like Antpool.")
     start_raw = get("REWARD_START") or REWARD_DEFAULT_START
     try:
         start = datetime.strptime(start_raw, "%Y-%m-%d").date()
@@ -981,19 +1020,22 @@ def reward_rotation_config(label, variables=None):
     miner_raw = get("REWARD_TH_MINER").lstrip("#").strip()
     if miner_raw and not re.fullmatch(r"\d{1,12}", miner_raw):
         raise ValueError(f"REWARD_TH_MINER_{key} must be a miner number like 123456, not {miner_raw!r}.")
-    return {"th_days": days[0], "gmt_days": days[1], "start": start, "miner": miner_raw or None}
+    return {"plan": plan, "start": start, "miner": miner_raw or None, "pool": pool or None}
 
 
-def reward_mode_for(day, th_days, gmt_days, start):
-    """("TH" or "GMT", day number within that stretch, length of that stretch) for `day`."""
-    if gmt_days == 0:
-        return "TH", 1, 1
-    if th_days == 0:
-        return "GMT", 1, 1
-    position = (day - start).days % (th_days + gmt_days)  # Python's % is never negative
-    if position < th_days:
-        return "TH", position + 1, th_days
-    return "GMT", position - th_days + 1, gmt_days
+def reward_mode_for(day, plan, start):
+    """(mode, day number within that stretch, length of that stretch) for `day`.
+
+    A one-entry plan is that mode every day, reported as (mode, 1, 1).
+    """
+    if len(plan) == 1:
+        return plan[0][0], 1, 1
+    position = (day - start).days % sum(d for _, d in plan)  # Python's % is never negative
+    for mode, days in plan:
+        if position < days:
+            return mode, position + 1, days
+        position -= days
+    raise AssertionError("unreachable")
 
 
 def reward_day(now=None):
@@ -1027,23 +1069,46 @@ def choose_miner_option(option_texts, wanted=None):
     return best, "the biggest listed miner"
 
 
-def _wait_for_reward_save(page, click, want_gmt, timeout=15000):
-    """Run `click`, then confirm GoMining saved the expected choice. Returns an error or None."""
+POOL_PICKER = "rewards-settings-pool ng-select#pools"
+REWARD_PASSES = 3     # open -> read -> correct -> re-check; GoMining sometimes needs a second go
+REWARD_SETTLE_MS = 2500
+
+
+def reward_state_matches(state, want, miner=None, pool=None):
+    """True when the pop-up's state (from _read_reward_state) already gives `want` (+ miner, pool)."""
+    if pool and (state.get("pool") or "").lower() != pool.lower():
+        return False
+    if want is None:
+        return True
+    if want == "BTC":
+        return state.get("reinvest") is False
+    if not state.get("reinvest"):
+        return False
+    if want == "GMT":
+        return state.get("choice") == "GMT"
+    return state.get("choice") == "TH" and (not miner or state.get("miner") == miner)
+
+
+def _read_reward_state(page):
+    """{"reinvest": bool, "choice": "TH"/"GMT"/None, "miner": digits or "", "pool": name or ""}.
+
+    While Reinvestment is off GoMining doesn't render the TH/GOMINING choices at all.
+    """
+    page.locator(REINVEST_SWITCH).wait_for(state="attached", timeout=30000)
+    page.wait_for_timeout(REWARD_SETTLE_MS)  # let the saved settings load into the controls
+    state = {"reinvest": page.locator(REINVEST_SWITCH).is_checked(), "choice": None, "miner": "", "pool": ""}
     try:
-        with page.expect_response(
-            lambda r: urlsplit(r.url).path == REWARD_SAVE_PATH and r.request.method == "POST",
-            timeout=timeout,
-        ) as info:
-            click()
-        response = info.value
-        sent = response.request.post_data_json or {}
-        if not response.ok or (response.json() or {}).get("data") is not True:
-            return f"GoMining didn't accept the change (HTTP {response.status})"
-        if sent.get("reinvestmentNftIncomeToGmt") is not want_gmt:
-            return "the page saved a different choice than expected"
-        return None
+        state["pool"] = page.locator(f"{POOL_PICKER} .ng-value").first.inner_text(timeout=5000).strip()
     except PlaywrightTimeoutError:
-        return f"GoMining never saved the change (no save request within {timeout // 1000}s)"
+        pass
+    if state["reinvest"]:
+        page.locator(REINVEST_RADIO.format("token")).wait_for(state="attached", timeout=10000)
+        if page.locator(REINVEST_RADIO.format("nft")).is_checked():
+            state["choice"] = "TH"
+            state["miner"] = _selected_miner_number(page.locator(MINER_PICKER))
+        elif page.locator(REINVEST_RADIO.format("token")).is_checked():
+            state["choice"] = "GMT"
+    return state
 
 
 def _selected_miner_number(picker):
@@ -1061,94 +1126,128 @@ def _selected_miner_number(picker):
         return ""
 
 
+def _pick_from_dropdown(page, picker_selector, choose):
+    """Open an ng-select and click the option `choose(option_texts)` returns (index, note).
+
+    Returns the note, or raises LookupError with the note when nothing suitable is offered.
+    """
+    options = page.locator(f"{picker_selector} .ng-option")
+    for _ in range(2):  # a click can land while the list is still settling; try twice
+        page.locator(f"{picker_selector} .ng-select-container").first.click(timeout=10000)
+        try:
+            options.first.wait_for(state="visible", timeout=5000)
+            break
+        except PlaywrightTimeoutError:
+            continue
+    options.first.wait_for(state="visible", timeout=5000)
+    index, note = choose(options.all_inner_texts())
+    if index is None:
+        page.keyboard.press("Escape")
+        raise LookupError(note)
+    options.nth(index).click()
+    page.wait_for_timeout(REWARD_SETTLE_MS)
+    return note
+
+
+def choose_pool_option(option_texts, wanted):
+    """(index, note) of the pool named `wanted` (case-insensitive, by its leading name), or (None, why)."""
+    for i, text in enumerate(option_texts):
+        name = (text or "").strip().split()[0] if (text or "").strip() else ""
+        if name.lower() == wanted.lower():
+            return i, wanted
+    offered = ", ".join((t or "").strip().split()[0] for t in option_texts if (t or "").strip())
+    return None, f"GoMining doesn't offer a pool called {wanted!r} (it offers: {offered or 'none'})"
+
+
+def _correct_reward_state(page, state, want, config):
+    """Make one round of changes towards `want`. Returns plain notes on what was changed."""
+    notes = []
+    click = lambda selector: (page.locator(selector).first.click(timeout=10000), page.wait_for_timeout(REWARD_SETTLE_MS))
+    switch = f"label:has({REINVEST_SWITCH})"
+    th_label = f"label:has({REINVEST_RADIO.format('nft')})"
+    gmt_label = f"label:has({REINVEST_RADIO.format('token')})"
+
+    if config["pool"] and state["pool"].lower() != config["pool"].lower():
+        _pick_from_dropdown(page, POOL_PICKER, lambda texts: choose_pool_option(texts, config["pool"]))
+        notes.append(f"pool -> {config['pool']}")
+    if want is None:
+        return notes
+    if want == "BTC":
+        if state["reinvest"]:
+            click(switch)
+            notes.append("Reinvestment off (BTC)")
+        return notes
+    if not state["reinvest"]:
+        # Turning Reinvestment back on can leave GoMining half-set (seen live: "no miner, not
+        # GOMINING" while the page shows GOMINING), so always follow it with an explicit choice.
+        click(switch)
+        page.locator(REINVEST_RADIO.format("token")).wait_for(state="attached", timeout=10000)
+        click(th_label)
+        notes.append("Reinvestment on")
+        state = {"reinvest": True, "choice": "TH" if page.locator(REINVEST_RADIO.format("nft")).is_checked() else "GMT",
+                 "miner": "", "pool": state["pool"]}
+    if want == "GMT":
+        if state["choice"] != "GMT" or "Reinvestment on" in notes:
+            click(gmt_label)
+            notes.append("GOMINING")
+        return notes
+    if state["choice"] != "TH":
+        click(th_label)
+    if not page.locator(REINVEST_RADIO.format("nft")).is_checked():
+        return notes + ["TH didn't stick yet"]
+    current_miner = _selected_miner_number(page.locator(MINER_PICKER))
+    if not current_miner or (config["miner"] and current_miner != config["miner"]):
+        note = _pick_from_dropdown(page, MINER_PICKER, lambda texts: choose_miner_option(texts, config["miner"]))
+        notes.append(f"TH on {note}")
+    else:
+        notes.append("TH")
+    return notes
+
+
 def apply_reward_rotation(context, label):
-    """Make the account's reward setting match today's place in its rotation. Never raises."""
+    """Make the account's reward destination and pool match its plan for today. Never raises.
+
+    Each pass opens the Settings pop-up fresh, reads what GoMining actually has saved, and makes
+    one round of corrections; the next pass checks the result. GoMining's own save requests
+    weren't a reliable signal (some choices save twice, some show before they save), so a fresh
+    read is the only thing trusted.
+    """
     try:
         config = reward_rotation_config(label)
     except ValueError as exc:
-        report(label, f"reward rotation skipped -- {exc}", level="warning")
+        report(label, f"reward settings skipped -- {exc}", level="warning")
         return
     if not config:
         return
-    want, n, length = reward_mode_for(reward_day(), config["th_days"], config["gmt_days"], config["start"])
-    want_name = "TH" if want == "TH" else "GOMINING"
-    where = f"day {n} of {length} on {want_name}" if config["th_days"] and config["gmt_days"] else f"always {want_name}"
+    want, where = None, "pool only"
+    if config["plan"]:
+        want, n, length = reward_mode_for(reward_day(), config["plan"], config["start"])
+        name = REWARD_MODE_NAMES[want]
+        where = f"always {name}" if len(config["plan"]) == 1 else f"day {n} of {length} on {name}"
     page = None
-    step = "opening the Settings pop-up"  # named in the warning if anything below times out
+    step = "opening the Settings pop-up"
+    changes = []
     try:
         page = context.new_page()
-        page.goto(REWARD_SETTINGS_URL, wait_until="domcontentloaded", timeout=30000)
-        step = "waiting for the Reinvestment switch"
-        page.locator(REINVEST_SWITCH).wait_for(state="attached", timeout=30000)
-        page.wait_for_timeout(1500)  # let the saved settings load into the switch and radios
-        if not page.locator(REINVEST_SWITCH).is_checked():
-            report(label, "reward rotation skipped -- Reinvestment is switched off in GoMining's "
-                          "reward settings. Turn it on there to use the rotation.", level="warning")
-            return
-        step = "waiting for the GOMINING / TH choices"
-        page.locator(REINVEST_RADIO.format("token")).wait_for(state="attached", timeout=10000)
-        on_th = page.locator(REINVEST_RADIO.format("nft")).is_checked()
-
-        if want == "GMT":
-            if not on_th:
-                print(f"[{label}] reward rotation: {where} -- already on GOMINING.")
+        for attempt in range(1, REWARD_PASSES + 1):
+            step = "opening the Settings pop-up"
+            page.goto(REWARD_SETTINGS_URL, wait_until="domcontentloaded", timeout=30000)
+            step = "reading the current settings"
+            state = _read_reward_state(page)
+            if reward_state_matches(state, want, config["miner"], config["pool"]):
+                done = f"changed: {', '.join(changes)}" if changes else "already set"
+                print(f"[{label}] reward settings: {where} -- {done}.")
                 return
-            error = _wait_for_reward_save(
-                page, lambda: page.locator(f"label:has({REINVEST_RADIO.format('token')})").click(), want_gmt=True)
-            if error:
-                report(label, f"reward rotation: could not switch to GOMINING -- {error}.", level="warning")
-            else:
-                print(f"[{label}] reward rotation: {where} -- switched TH -> GOMINING.")
-            return
-
-        picker = page.locator(MINER_PICKER)
-        saved_already = False
-        if not on_th:
-            # On some accounts GoMining remembers the last TH miner, so choosing TH saves
-            # straight away with that miner (seen live on one account; another needed a miner
-            # picked first). Catch that save if it happens; otherwise a miner is picked below.
-            step = "choosing TH"
-            saved_already = _wait_for_reward_save(
-                page, lambda: page.locator(f"label:has({REINVEST_RADIO.format('nft')})").click(),
-                want_gmt=False, timeout=5000) is None
-            if saved_already and not config["miner"]:
-                print(f"[{label}] reward rotation: {where} -- switched to TH (GoMining kept your last TH miner).")
-                return
-        if on_th or saved_already:
-            if not config["miner"]:
-                print(f"[{label}] reward rotation: {where} -- already on TH.")
-                return
-            if _selected_miner_number(picker) == config["miner"]:
-                if saved_already:
-                    print(f"[{label}] reward rotation: {where} -- switched to TH on the miner you chose.")
-                else:
-                    print(f"[{label}] reward rotation: {where} -- already on TH.")
-                return
-            # Wrong or unreadable miner: pick the configured one (re-saving the same choice
-            # changes nothing).
-        step = "opening the miner list"
-        options = picker.locator(".ng-option")
-        for _ in range(2):  # a click can land while the list is still settling; try twice
-            picker.locator(".ng-select-container").first.click(timeout=10000)
-            try:
-                options.first.wait_for(state="visible", timeout=5000)
+            if attempt == REWARD_PASSES:
                 break
-            except PlaywrightTimeoutError:
-                continue
-        step = "waiting for miners to appear in the list"
-        options.first.wait_for(state="visible", timeout=5000)
-        step = "picking the miner"
-        index, note = choose_miner_option(options.all_inner_texts(), config["miner"])
-        if index is None:
-            report(label, f"reward rotation: could not switch to TH -- {note}.", level="warning")
-            return
-        error = _wait_for_reward_save(page, lambda: options.nth(index).click(), want_gmt=False)
-        if error:
-            report(label, f"reward rotation: could not switch to TH -- {error}.", level="warning")
-        else:
-            print(f"[{label}] reward rotation: {where} -- switched to TH on {note}.")
+            step = "changing the settings"
+            changes += _correct_reward_state(page, state, want, config)
+        report(label, f"reward settings: {where} -- GoMining still doesn't show the wanted setting after "
+                      f"{REWARD_PASSES - 1} tries (changed: {', '.join(changes) or 'nothing'}).", level="warning")
+    except LookupError as exc:
+        report(label, f"reward settings: {where} -- {exc}.", level="warning")
     except Exception as exc:
-        report(label, f"reward rotation failed while {step} ({type(exc).__name__}); the tap is unaffected.",
+        report(label, f"reward settings failed while {step} ({type(exc).__name__}); the tap is unaffected.",
                level="warning")
     finally:
         if page is not None:
