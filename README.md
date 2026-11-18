@@ -1,5 +1,7 @@
 # GoMining ServiceTap
 
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/jdobbsclt)
+
 Automatically taps GoMining's daily "maintenance" (service) button for one or
 more accounts, so your maintenance-discount streak never lapses — even if
 your computer is off. Runs on GitHub Actions (free tier is plenty). Also
